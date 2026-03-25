@@ -1,0 +1,11 @@
+__pycache__/
+*.py[cod]
+*.log
+.DS_Store
+.idea/
+.vscode/
+build/
+dist/
+*.spec.bak
+qianiu_auto_report/output/
+qianiu_auto_report/logs/

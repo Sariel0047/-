@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "qianiu_auto_report"
+version = "0.1.0"
+description = "Qianiu auto report project skeleton"
+requires-python = ">=3.10"
+dependencies = [
+    "selenium>=4.0.0",
+    "pandas>=2.0.0",
+    "openpyxl>=3.1.0",
+]
+
+[tool.setuptools]
+include-package-data = true
