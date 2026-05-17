@@ -1,0 +1,61 @@
+name: Build Windows EXE
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - master
+
+jobs:
+  build-windows-exe:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller pytest
+
+      - name: Run tests
+        run: |
+          python -m pytest -q tests/test_main_platform.py tests/test_excel_writer.py tests/test_utils.py tests/test_gui_state.py tests/test_gui_text.py
+
+      - name: Build EXE
+        run: |
+          pyinstaller --onefile --noconsole --name qianiu_auto_report `
+            --add-data "qianiu_auto_report\templates;qianiu_auto_report\templates" `
+            --add-data "qianiu_auto_report\drivers;qianiu_auto_report\drivers" `
+            main.py
+
+      - name: Prepare release folder
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force release\qianiu_auto_report | Out-Null
+          Copy-Item dist\qianiu_auto_report.exe release\qianiu_auto_report\
+          Copy-Item qianiu_auto_report\templates release\qianiu_auto_report\templates -Recurse -Force
+          Copy-Item qianiu_auto_report\drivers release\qianiu_auto_report\drivers -Recurse -Force
+          @"
+          使用说明
+          1. 双击 qianiu_auto_report.exe 启动。
+          2. 电脑需要已安装 Google Chrome。
+          3. 点击“开始生成”后，在打开的工作浏览器中登录淘宝/抖音。
+          4. 回到程序点击“我已登录，开始生成报表”。
+          5. 报表默认生成到桌面。
+          "@ | Out-File -FilePath release\qianiu_auto_report\使用说明.txt -Encoding utf8
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: qianiu-auto-report-windows
+          path: release/qianiu_auto_report
