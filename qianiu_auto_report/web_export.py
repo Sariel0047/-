@@ -4491,6 +4491,9 @@ class WebExporter:
             )
         self._log_step("售后工作台已点击：导出")
 
+        if self._is_douyin_after_sale_zero_export_notice_present(timeout_seconds=3.0):
+            raise TimeoutException("售后工作台售后单导出为0条，无法导出。")
+
         try:
             detail_file = wait_for_download_complete(
                 directory=target_dir,
@@ -4509,6 +4512,38 @@ class WebExporter:
         self._log_step(f"售后工作台售后单已下载：{detail_file}")
         return detail_file
 
+    def _is_douyin_after_sale_zero_export_notice_present(self, timeout_seconds: float = 2.0) -> bool:
+        """
+        判断售后工作台是否弹出“0条无法导出”的提示。
+        """
+        zero_markers = (
+            "售后单导出为0条",
+            "导出为0条",
+            "无法导出",
+            "请修改筛选条件后重试",
+        )
+        end_time = time.time() + max(timeout_seconds, 0.1)
+        while time.time() < end_time:
+            page_text = self._page_text_snippet(max_length=1200)
+            if "0条" in page_text and any(marker in page_text for marker in zero_markers):
+                return True
+            time.sleep(max(self.ui_poll_interval_seconds, 0.1))
+        return False
+
+    def _build_zero_douyin_after_sale_refund_summary(self) -> dict[str, Any]:
+        """
+        构建抖店售后工作台无可导出售后单时的 0 退款汇总。
+        """
+        from qianiu_auto_report.data_process import DataProcessor
+
+        summary = DataProcessor()._build_empty_summary()
+        metrics = dict(DataProcessor.DOUYIN_ZERO_REFUND_METRICS)
+        summary["total_count"] = 0
+        summary["total_amount"] = 0.0
+        summary["douyin_refund_metrics"] = metrics
+        summary["report_date"] = DateConfig.default_report_date_str()
+        return summary
+
     def _collect_douyin_after_sale_refund_summary(self, download_dir: Path) -> dict[str, Any]:
         """
         从抖店售后工作台导出售后单并汇总退款。
@@ -4517,8 +4552,15 @@ class WebExporter:
 
         self._open_douyin_after_sale_workbench_page()
         self._set_douyin_after_sale_export_conditions()
-        detail_file = self._download_douyin_after_sale_orders(download_dir=download_dir)
-        summary = DataProcessor().summarize_douyin_after_sale_orders(detail_file)
+        try:
+            detail_file = self._download_douyin_after_sale_orders(download_dir=download_dir)
+        except TimeoutException as exc:
+            if "导出为0条" not in str(exc):
+                raise
+            self._log_step("售后工作台售后单为 0 条，退款数据按 0 处理")
+            summary = self._build_zero_douyin_after_sale_refund_summary()
+        else:
+            summary = DataProcessor().summarize_douyin_after_sale_orders(detail_file)
         refund_metrics = summary.get("douyin_refund_metrics", {})
         self._log_step(
             "售后工作台退款汇总："

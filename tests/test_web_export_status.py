@@ -1107,6 +1107,31 @@ def test_select_douyin_after_sale_date_shortcut_uses_right_side_quick_select() -
     assert clicks == ["date-shortcut", "yesterday-option"]
 
 
+def test_collect_douyin_after_sale_refund_summary_treats_zero_export_as_zero(monkeypatch) -> None:
+    """
+    售后工作台提示“售后单导出为0条”时，不应继续等待下载，应按 0 退款汇总。
+    """
+    exporter = WebExporter()
+    calls: list[str] = []
+    exporter._open_douyin_after_sale_workbench_page = lambda: calls.append("open")  # type: ignore[method-assign]
+    exporter._set_douyin_after_sale_export_conditions = lambda: calls.append("conditions")  # type: ignore[method-assign]
+    exporter._download_douyin_after_sale_orders = lambda download_dir: (_ for _ in ()).throw(  # type: ignore[method-assign]
+        TimeoutException("售后工作台售后单导出为0条，无法导出。")
+    )
+    exporter._log_step = lambda message: calls.append(message)  # type: ignore[method-assign]
+    monkeypatch.setattr(
+        "qianiu_auto_report.web_export.DateConfig.default_report_date_str",
+        lambda: "2026-05-18",
+    )
+
+    summary = exporter._collect_douyin_after_sale_refund_summary(download_dir=object())  # type: ignore[arg-type]
+
+    assert summary["report_date"] == "2026-05-18"
+    assert summary["douyin_refund_metrics"]["refund_total_order_count"] == 0
+    assert summary["douyin_refund_metrics"]["refund_total_amount"] == 0.0
+    assert "售后工作台售后单为 0 条，退款数据按 0 处理" in calls
+
+
 def test_open_douyin_compass_page_falls_back_to_direct_url_when_click_does_not_switch() -> None:
     """
     若点击顶部【电商罗盘】后未真正切页，应直接回退到罗盘 URL。
