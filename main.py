@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 import sys
 import traceback
@@ -459,6 +460,14 @@ def main(argv: tuple[str, ...] | None = None) -> bool:
     """
     应用程序主入口。
     """
+    if os.getenv("QIANNIU_SELF_CHECK", "").strip() in {"1", "true", "True", "yes", "on"}:
+        from selenium import webdriver as _webdriver
+        from selenium.webdriver.chrome.webdriver import WebDriver as _ChromeWebDriver
+
+        _ = (_webdriver, _ChromeWebDriver)
+        print("SELF_CHECK_OK")
+        return True
+
     if resolve_startup_mode(argv) == "gui":
         from qianiu_auto_report.gui import AppGUI
 

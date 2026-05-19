@@ -55,10 +55,18 @@ jobs:
           $seleniumManager = python -c "from selenium.webdriver.common.selenium_manager import SeleniumManager; print(SeleniumManager()._get_binary())"
           Write-Host "Selenium Manager: $seleniumManager"
           pyinstaller --onefile --noconsole --name qianiu_auto_report `
+            --collect-submodules selenium `
+            --collect-data selenium `
             --add-data "qianiu_auto_report\templates;qianiu_auto_report\templates" `
             --add-data "qianiu_auto_report\drivers;qianiu_auto_report\drivers" `
             --add-binary "$seleniumManager;selenium\webdriver\common\windows" `
             main.py
+
+      - name: Smoke test packaged EXE
+        shell: pwsh
+        run: |
+          $env:QIANNIU_SELF_CHECK = "1"
+          .\dist\qianiu_auto_report.exe
 
       - name: Prepare release folder
         shell: pwsh
