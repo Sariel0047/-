@@ -974,6 +974,9 @@ class AppGUI:
             friendly = friendly_error_message(error_text)
             self.root.after(0, self._set_ui_state, GUIState.ERROR, friendly)
             self.root.after(0, self.append_log, friendly)
+            last_line = error_text.splitlines()[-1] if error_text else ""
+            if last_line:
+                self.root.after(0, self.append_log, f"技术细节：{last_line}")
             self.root.after(0, self.append_log, "你可以点“重新打开工作浏览器”再试一次。")
             print(error_text, file=sys.stderr)
         finally:

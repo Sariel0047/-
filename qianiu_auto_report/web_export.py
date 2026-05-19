@@ -5,8 +5,10 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import socket
+import sys
 import time
 from urllib.error import URLError
 from urllib.request import urlopen
@@ -8447,6 +8449,7 @@ class WebExporter:
             options.binary_location = CHROME_BINARY_PATH
 
         chromedriver_path = self._resolve_chromedriver_path()
+        driver_errors: list[str] = []
         if chromedriver_path is not None:
             service = Service(executable_path=str(chromedriver_path))
         else:
@@ -8455,14 +8458,27 @@ class WebExporter:
         try:
             self.driver = webdriver.Chrome(service=service, options=options)
         except WebDriverException as exc:
+            driver_errors.append(str(exc))
+            if chromedriver_path is not None:
+                try:
+                    self._log_step("内置 chromedriver 启动失败，改用 Selenium Manager 自动匹配驱动。")
+                    self.driver = webdriver.Chrome(service=Service(), options=options)
+                except WebDriverException as fallback_exc:
+                    driver_errors.append(str(fallback_exc))
+                else:
+                    self._is_attached_session = self.attach_to_existing_browser
+                    self.wait = WebDriverWait(self.driver, self.timeout_seconds)
+                    self._configure_download_behavior()
+                    return
             if self.attach_to_existing_browser:
                 host, port = self._split_debugger_address()
+                details = "\n".join(item for item in driver_errors if item)
                 raise RuntimeError(
                     "附着已打开浏览器失败。"
                     f"\n请确认 Chrome 已通过远程调试端口启动：{self.debugger_address}"
                     f"\n可在浏览器中打开并确认可访问：http://{host}:{port}/json/version"
-                    "\nmacOS 可参考：open -na \"Google Chrome\" --args "
-                    "--remote-debugging-port=9222 --user-data-dir=\"$HOME/.qianiu_chrome_profile\""
+                    "\nWindows 可检查是否已安装 Google Chrome，或重启程序点【重新打开工作浏览器】。"
+                    f"\nDriver 细节：{details[:1200]}"
                 ) from exc
             raise
 
@@ -8478,25 +8494,44 @@ class WebExporter:
 
     def _resolve_chromedriver_path(self) -> Optional[Path]:
         """
-        解析可用的 chromedriver 路径，优先项目配置，其次 Selenium 本地缓存。
+        解析可用的 chromedriver 路径，优先项目/打包资源，其次 Selenium 本地缓存。
         """
-        if CHROMEDRIVER_PATH.exists():
-            return CHROMEDRIVER_PATH
+        candidates: list[Path] = []
+
+        candidates.append(CHROMEDRIVER_PATH)
+        executable_name = "chromedriver.exe" if os.name == "nt" else "chromedriver"
+
+        bundle_root = Path(getattr(sys, "_MEIPASS", "") or "")
+        if bundle_root:
+            candidates.append(bundle_root / "qianiu_auto_report" / "drivers" / executable_name)
+            candidates.append(bundle_root / "drivers" / executable_name)
+
+        if getattr(sys, "frozen", False):
+            exe_dir = Path(sys.executable).resolve().parent
+            candidates.append(exe_dir / "qianiu_auto_report" / "drivers" / executable_name)
+            candidates.append(exe_dir / "drivers" / executable_name)
+
+        for candidate in candidates:
+            try:
+                if candidate.exists() and candidate.is_file():
+                    return candidate
+            except OSError:
+                continue
 
         cache_roots = (
             Path.home() / ".cache" / "selenium" / "chromedriver",
             Path.home() / "Library" / "Caches" / "selenium" / "chromedriver",
         )
-        candidates: list[Path] = []
+        cached_candidates: list[Path] = []
         for root in cache_roots:
             if not root.exists():
                 continue
-            candidates.extend(path for path in root.glob("**/chromedriver") if path.is_file())
+            cached_candidates.extend(path for path in root.glob("**/chromedriver*") if path.is_file())
 
-        if not candidates:
+        if not cached_candidates:
             return None
 
-        best = max(candidates, key=lambda item: item.stat().st_mtime)
+        best = max(cached_candidates, key=lambda item: item.stat().st_mtime)
         self._log_step(f"使用缓存 chromedriver：{best}")
         return best
 

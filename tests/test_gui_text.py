@@ -12,6 +12,7 @@ from qianiu_auto_report.gui_support import (
     format_output_dir_label,
     format_platform_label,
     normalize_platform_selection,
+    resolve_chrome_executable,
 )
 
 
@@ -75,3 +76,16 @@ def test_build_work_browser_command_uses_windows_start_command() -> None:
     assert command[:5] == ["cmd", "/c", "start", "", "chrome"]
     assert "--remote-debugging-port=9222" in command
     assert "--user-data-dir=C:/Users/demo/.qianiu_chrome_profile" in command
+
+
+def test_resolve_chrome_executable_prefers_configured_path_on_windows() -> None:
+    """
+    Windows 打包版允许显式指定 Chrome 路径，避免 PATH 中没有 chrome 命令时启动到普通浏览器。
+    """
+    assert (
+        resolve_chrome_executable(
+            system_name="Windows",
+            chrome_binary_path=r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+        )
+        == r"C:\Program Files\Google\Chrome\Application\chrome.exe"
+    )

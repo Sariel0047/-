@@ -4,6 +4,7 @@ GUI 文案与展示辅助函数。
 
 from __future__ import annotations
 
+import os
 import platform
 from pathlib import Path
 
@@ -53,6 +54,37 @@ def format_output_dir_label(output_dir: Path | str) -> str:
     return str(path)
 
 
+def resolve_chrome_executable(
+    *,
+    system_name: str | None = None,
+    chrome_binary_path: str = "",
+) -> str:
+    """
+    解析用于启动工作浏览器的 Chrome 可执行文件。
+    """
+    configured = chrome_binary_path.strip()
+    if configured:
+        return configured
+
+    system = system_name or platform.system()
+    if system == "Windows":
+        env = os.environ
+        candidates = []
+        for key in ("PROGRAMFILES", "PROGRAMFILES(X86)", "LOCALAPPDATA"):
+            root = env.get(key, "").strip()
+            if root:
+                candidates.append(Path(root) / "Google" / "Chrome" / "Application" / "chrome.exe")
+        for candidate in candidates:
+            if candidate.exists():
+                return str(candidate)
+        return "chrome"
+
+    if system == "Linux":
+        return "google-chrome"
+
+    return "Google Chrome"
+
+
 def build_work_browser_command(
     *,
     system_name: str | None = None,
@@ -74,8 +106,14 @@ def build_work_browser_command(
         return ["open", "-na", "Google Chrome", "--args", *args]
 
     if system == "Windows":
-        executable = chrome_binary_path.strip() or "chrome"
+        executable = resolve_chrome_executable(
+            system_name=system,
+            chrome_binary_path=chrome_binary_path,
+        )
         return ["cmd", "/c", "start", "", executable, *args]
 
-    executable = chrome_binary_path.strip() or "google-chrome"
+    executable = resolve_chrome_executable(
+        system_name=system,
+        chrome_binary_path=chrome_binary_path,
+    )
     return [executable, *args]
