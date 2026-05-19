@@ -4,7 +4,9 @@
 
 from __future__ import annotations
 
+from datetime import date
 from pathlib import Path
+import re
 from typing import Any, Optional
 
 import pandas as pd
@@ -19,6 +21,9 @@ class DataProcessor:
 
     SUPPORTED_EXCEL_SUFFIXES = (".xlsx", ".xls", ".xlsm")
     DATE_COLUMN_CANDIDATES = (
+        "退款完结时间",
+        "退款成功时间",
+        "完结时间",
         "申请时间",
         "售后申请时间",
         "创建时间",
@@ -27,6 +32,8 @@ class DataProcessor:
         "时间",
     )
     AMOUNT_COLUMN_CANDIDATES = (
+        "退款总额",
+        "退款总金额",
         "退款金额",
         "金额",
         "申请退款金额",
@@ -49,6 +56,34 @@ class DataProcessor:
         "已发货仅退款": ("未收到货", "已收到货"),
         "未发货仅退款": ("未发货",),
         "退货退款": ("已寄回",),
+    }
+    DOUYIN_REFUND_DETAIL_SHEET_NAME = "本店数据"
+    DOUYIN_AFTER_SALE_TYPE_COLUMN = "售后类型"
+    DOUYIN_AFTER_SALE_AMOUNT_COLUMN = "退商品金额（元）"
+    DOUYIN_AFTER_SALE_FINISHED_TIME_COLUMN = "售后完结时间"
+    DOUYIN_REFUND_METRIC_COLUMNS = {
+        "refund_total_order_count": "全部退款阶段-退款订单数",
+        "refund_total_amount": "全部退款阶段-退款金额",
+        "pre_shipment_refund_order_count": "发货前退款阶段-退款订单数",
+        "pre_shipment_refund_amount": "发货前退款阶段-退款金额",
+        "unreceived_refund_order_count": "未收货退款阶段-退款订单数",
+        "unreceived_refund_amount": "未收货退款阶段-退款金额",
+        "received_refund_order_count": "已收货退款阶段-退款订单数",
+        "received_refund_amount": "已收货退款阶段-退款金额",
+        "return_refund_order_count": "已收货退货退款阶段-退款订单数",
+        "return_refund_amount": "已收货退货退款阶段-退款金额",
+    }
+    DOUYIN_ZERO_REFUND_METRICS = {
+        "refund_total_order_count": 0,
+        "refund_total_amount": 0.0,
+        "pre_shipment_refund_order_count": 0,
+        "pre_shipment_refund_amount": 0.0,
+        "unreceived_refund_order_count": 0,
+        "unreceived_refund_amount": 0.0,
+        "received_refund_order_count": 0,
+        "received_refund_amount": 0.0,
+        "return_refund_order_count": 0,
+        "return_refund_amount": 0.0,
     }
 
     def __init__(self) -> None:
@@ -79,6 +114,39 @@ class DataProcessor:
             "total_amount": 0.0,
             "categories": categories,
         }
+
+    def _build_zero_douyin_refund_summary(self, report_date: str = "") -> dict[str, Any]:
+        """
+        构建抖音退款分析无数据时的 0 汇总。
+        """
+        summary = self._build_empty_summary()
+        summary["douyin_refund_metrics"] = dict(self.DOUYIN_ZERO_REFUND_METRICS)
+        if report_date:
+            summary["report_date"] = report_date
+        return summary
+
+    @staticmethod
+    def _extract_report_date_from_title(title: str) -> str:
+        """
+        从抖音退款明细标题/文件名中提取日期，支持 2026_05_13 / 2026-05-13 / 2026年05月13日。
+        """
+        text = str(title or "")
+        patterns = (
+            r"(20\d{2})[_\-.年/](\d{1,2})[_\-.月/](\d{1,2})",
+            r"(20\d{2})(\d{2})(\d{2})",
+        )
+        for pattern in patterns:
+            for match in re.finditer(pattern, text):
+                try:
+                    parsed = date(
+                        int(match.group(1)),
+                        int(match.group(2)),
+                        int(match.group(3)),
+                    )
+                except ValueError:
+                    continue
+                return parsed.strftime("%Y-%m-%d")
+        return ""
 
     def _find_column(self, df: pd.DataFrame, candidates: tuple[str, ...]) -> Optional[str]:
         """
@@ -163,6 +231,16 @@ class DataProcessor:
         refund_text = str(refund_type or "").strip()
         status_text = str(goods_status or "").strip()
         combined_text = f"{refund_text}|{status_text}"
+
+        # 按用户业务口径：优先由“货物状态”直接归类
+        if "未发货" in status_text:
+            return "未发货仅退款", "未发货"
+        if "已寄回" in status_text:
+            return "退货退款", "已寄回"
+        if "未收到货" in status_text:
+            return "已发货仅退款", "未收到货"
+        if "已收到货" in status_text:
+            return "已发货仅退款", "已收到货"
 
         if "未发货仅退款" in combined_text or "未发货" == status_text:
             return "未发货仅退款", "未发货"
@@ -260,6 +338,235 @@ class DataProcessor:
                     2,
                 )
 
+        return summary
+
+    @staticmethod
+    def _normalize_column_name(name: Any) -> str:
+        """
+        标准化列名，去掉多余空白。
+        """
+        return re.sub(r"\s+", "", str(name or "")).strip()
+
+    def _find_normalized_column(self, df: pd.DataFrame, target_name: str) -> Optional[str]:
+        """
+        按标准化列名查找真实列名。
+        """
+        normalized_target = self._normalize_column_name(target_name)
+        for column in df.columns:
+            if self._normalize_column_name(column) == normalized_target:
+                return str(column)
+        return None
+
+    def _sum_numeric_column(self, df: pd.DataFrame, column_name: str) -> float:
+        """
+        汇总指定列的数值，兼容金额符号与千分位。
+        """
+        if column_name not in df.columns:
+            return 0.0
+        values = self._parse_amount(df[column_name])
+        return round(float(values.sum()), 2)
+
+    def _sum_count_column(self, df: pd.DataFrame, column_name: str) -> int:
+        """
+        汇总指定列的订单数。
+        """
+        return int(round(self._sum_numeric_column(df=df, column_name=column_name)))
+
+    def summarize_douyin_refund_analysis(self, input_path: Path) -> dict[str, Any]:
+        """
+        汇总抖音电商罗盘“退款分析 -> 下载明细”文件中的本店数据。
+        """
+        target_file = self._resolve_excel_file(Path(input_path))
+        excel_file = pd.ExcelFile(target_file)
+        if self.DOUYIN_REFUND_DETAIL_SHEET_NAME not in excel_file.sheet_names:
+            sheets = "、".join(excel_file.sheet_names)
+            raise ValueError(
+                f"未找到抖音退款分析工作表【{self.DOUYIN_REFUND_DETAIL_SHEET_NAME}】，当前工作表：{sheets}"
+            )
+
+        df = pd.read_excel(target_file, sheet_name=self.DOUYIN_REFUND_DETAIL_SHEET_NAME)
+        df.columns = [str(column).strip() for column in df.columns]
+        report_date = self._extract_report_date_from_title(target_file.stem)
+        date_column = self._find_normalized_column(df, "日期")
+        if not report_date and date_column is not None:
+            parsed_dates = pd.to_datetime(df[date_column], errors="coerce")
+            valid_dates = parsed_dates.dropna()
+            if not valid_dates.empty:
+                report_date = valid_dates.dt.date.max().strftime("%Y-%m-%d")
+
+        resolved_columns: dict[str, str] = {}
+        missing_columns: list[str] = []
+        for metric_key, expected_column in self.DOUYIN_REFUND_METRIC_COLUMNS.items():
+            actual_column = self._find_normalized_column(df, expected_column)
+            if actual_column is None:
+                missing_columns.append(expected_column)
+            else:
+                resolved_columns[metric_key] = actual_column
+
+        if missing_columns:
+            all_metric_columns_missing = len(missing_columns) == len(self.DOUYIN_REFUND_METRIC_COLUMNS)
+            if all_metric_columns_missing or df.empty:
+                return self._build_zero_douyin_refund_summary(report_date=report_date)
+            raise ValueError(f"抖音退款分析明细缺少列：{'、'.join(missing_columns)}")
+
+        metrics = {
+            "refund_total_order_count": self._sum_count_column(
+                df, resolved_columns["refund_total_order_count"]
+            ),
+            "refund_total_amount": self._sum_numeric_column(
+                df, resolved_columns["refund_total_amount"]
+            ),
+            "pre_shipment_refund_order_count": self._sum_count_column(
+                df, resolved_columns["pre_shipment_refund_order_count"]
+            ),
+            "pre_shipment_refund_amount": self._sum_numeric_column(
+                df, resolved_columns["pre_shipment_refund_amount"]
+            ),
+            "unreceived_refund_order_count": self._sum_count_column(
+                df, resolved_columns["unreceived_refund_order_count"]
+            ),
+            "unreceived_refund_amount": self._sum_numeric_column(
+                df, resolved_columns["unreceived_refund_amount"]
+            ),
+            "received_refund_order_count": self._sum_count_column(
+                df, resolved_columns["received_refund_order_count"]
+            ),
+            "received_refund_amount": self._sum_numeric_column(
+                df, resolved_columns["received_refund_amount"]
+            ),
+            "return_refund_order_count": self._sum_count_column(
+                df, resolved_columns["return_refund_order_count"]
+            ),
+            "return_refund_amount": self._sum_numeric_column(
+                df, resolved_columns["return_refund_amount"]
+            ),
+        }
+
+        summary = self._build_empty_summary()
+        summary["total_count"] = metrics["refund_total_order_count"]
+        summary["total_amount"] = metrics["refund_total_amount"]
+        summary["douyin_refund_metrics"] = metrics
+        if report_date:
+            summary["report_date"] = report_date
+
+        summary["categories"]["未发货仅退款"]["count"] = metrics[
+            "pre_shipment_refund_order_count"
+        ]
+        summary["categories"]["未发货仅退款"]["amount"] = metrics["pre_shipment_refund_amount"]
+        summary["categories"]["未发货仅退款"]["sub_categories"]["未发货"]["count"] = metrics[
+            "pre_shipment_refund_order_count"
+        ]
+        summary["categories"]["未发货仅退款"]["sub_categories"]["未发货"]["amount"] = metrics[
+            "pre_shipment_refund_amount"
+        ]
+
+        shipped_count = (
+            metrics["unreceived_refund_order_count"] + metrics["received_refund_order_count"]
+        )
+        shipped_amount = round(
+            metrics["unreceived_refund_amount"] + metrics["received_refund_amount"],
+            2,
+        )
+        summary["categories"]["已发货仅退款"]["count"] = shipped_count
+        summary["categories"]["已发货仅退款"]["amount"] = shipped_amount
+        summary["categories"]["已发货仅退款"]["sub_categories"]["未收到货"]["count"] = metrics[
+            "unreceived_refund_order_count"
+        ]
+        summary["categories"]["已发货仅退款"]["sub_categories"]["未收到货"]["amount"] = metrics[
+            "unreceived_refund_amount"
+        ]
+        summary["categories"]["已发货仅退款"]["sub_categories"]["已收到货"]["count"] = metrics[
+            "received_refund_order_count"
+        ]
+        summary["categories"]["已发货仅退款"]["sub_categories"]["已收到货"]["amount"] = metrics[
+            "received_refund_amount"
+        ]
+
+        summary["categories"]["退货退款"]["count"] = metrics["return_refund_order_count"]
+        summary["categories"]["退货退款"]["amount"] = metrics["return_refund_amount"]
+        summary["categories"]["退货退款"]["sub_categories"]["已寄回"]["count"] = metrics[
+            "return_refund_order_count"
+        ]
+        summary["categories"]["退货退款"]["sub_categories"]["已寄回"]["amount"] = metrics[
+            "return_refund_amount"
+        ]
+        return summary
+
+    def summarize_douyin_after_sale_orders(self, input_path: Path) -> dict[str, Any]:
+        """
+        汇总抖店“售后工作台 -> 导出”的售后单。
+        """
+        target_file = self._resolve_excel_file(Path(input_path))
+        df = pd.read_excel(target_file)
+        df.columns = [str(column).strip() for column in df.columns]
+
+        type_column = self._find_normalized_column(df, self.DOUYIN_AFTER_SALE_TYPE_COLUMN)
+        amount_column = self._find_normalized_column(df, self.DOUYIN_AFTER_SALE_AMOUNT_COLUMN)
+        if type_column is None or amount_column is None:
+            missing_columns = []
+            if type_column is None:
+                missing_columns.append(self.DOUYIN_AFTER_SALE_TYPE_COLUMN)
+            if amount_column is None:
+                missing_columns.append(self.DOUYIN_AFTER_SALE_AMOUNT_COLUMN)
+            raise ValueError(f"抖音售后单缺少列：{'、'.join(missing_columns)}")
+
+        finished_time_column = self._find_normalized_column(
+            df, self.DOUYIN_AFTER_SALE_FINISHED_TIME_COLUMN
+        )
+        report_date = get_previous_date().strftime("%Y-%m-%d")
+        if finished_time_column is not None:
+            parsed_dates = pd.to_datetime(df[finished_time_column], errors="coerce")
+            valid_dates = parsed_dates.dropna()
+            if not valid_dates.empty:
+                report_date = valid_dates.dt.date.max().strftime("%Y-%m-%d")
+
+        type_series = df[type_column].fillna("").astype(str).str.strip()
+        amount_series = self._parse_amount(df[amount_column])
+
+        def count_amount(type_name: str) -> tuple[int, float]:
+            mask = type_series == type_name
+            return int(mask.sum()), round(float(amount_series.loc[mask].sum()), 2)
+
+        return_count, return_amount = count_amount("退货退款")
+        shipped_count, shipped_amount = count_amount("已发货退款")
+        unshipped_count, unshipped_amount = count_amount("未发货退款")
+        total_count = int(return_count + shipped_count + unshipped_count)
+        total_amount = round(float(return_amount + shipped_amount + unshipped_amount), 2)
+
+        metrics = {
+            "refund_total_order_count": total_count,
+            "refund_total_amount": total_amount,
+            "pre_shipment_refund_order_count": unshipped_count,
+            "pre_shipment_refund_amount": unshipped_amount,
+            "unreceived_refund_order_count": 0,
+            "unreceived_refund_amount": 0.0,
+            "received_refund_order_count": shipped_count,
+            "received_refund_amount": shipped_amount,
+            "return_refund_order_count": return_count,
+            "return_refund_amount": return_amount,
+        }
+
+        summary = self._build_empty_summary()
+        summary["total_count"] = total_count
+        summary["total_amount"] = total_amount
+        summary["douyin_refund_metrics"] = metrics
+        if report_date:
+            summary["report_date"] = report_date
+
+        summary["categories"]["未发货仅退款"]["count"] = unshipped_count
+        summary["categories"]["未发货仅退款"]["amount"] = unshipped_amount
+        summary["categories"]["未发货仅退款"]["sub_categories"]["未发货"]["count"] = unshipped_count
+        summary["categories"]["未发货仅退款"]["sub_categories"]["未发货"]["amount"] = unshipped_amount
+
+        summary["categories"]["已发货仅退款"]["count"] = shipped_count
+        summary["categories"]["已发货仅退款"]["amount"] = shipped_amount
+        summary["categories"]["已发货仅退款"]["sub_categories"]["已收到货"]["count"] = shipped_count
+        summary["categories"]["已发货仅退款"]["sub_categories"]["已收到货"]["amount"] = shipped_amount
+
+        summary["categories"]["退货退款"]["count"] = return_count
+        summary["categories"]["退货退款"]["amount"] = return_amount
+        summary["categories"]["退货退款"]["sub_categories"]["已寄回"]["count"] = return_count
+        summary["categories"]["退货退款"]["sub_categories"]["已寄回"]["amount"] = return_amount
         return summary
 
     def save_processed_data(self, df: pd.DataFrame, output_path: Path) -> None:

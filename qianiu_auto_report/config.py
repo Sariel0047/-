@@ -112,17 +112,18 @@ class ExportConfig:
         os.getenv("QIANNIU_DOWNLOAD_DIR", str(Path.home() / "Desktop"))
     ).expanduser()
     DOWNLOAD_WAIT_SECONDS = 30
-    # 测试模式：跳过“退款管理页面自动操作”，直接读取下载目录最新 Excel
-    # 设为 False 可恢复完整网页自动化流程
-    SKIP_REFUND_MANAGE_ACTIONS = os.getenv("QIANNIU_SKIP_REFUND_MANAGE_ACTIONS", "1").strip() in {
+    # 是否跳过“退款管理页面自动操作”。
+    # 默认值为 False（执行完整流程，便于输出 A+B 合并报表）。
+    # SKIP_REFUND_MANAGE_ACTIONS = "True"
+    SKIP_REFUND_MANAGE_ACTIONS = os.getenv("QIANNIU_SKIP_REFUND_MANAGE_ACTIONS", "0").strip() in {
         "1",
         "true",
         "True",
         "yes",
         "on",
     }
-    # 简化联调模式：可按需跳过数据处理
-    SKIP_DATA_PROCESS = os.getenv("QIANNIU_SKIP_DATA_PROCESS", "1").strip() in {
+    # 是否跳过数据处理。默认 False（完整流程需要处理退款明细后写入模板）。
+    SKIP_DATA_PROCESS = os.getenv("QIANNIU_SKIP_DATA_PROCESS", "0").strip() in {
         "1",
         "true",
         "True",
@@ -144,6 +145,8 @@ class ExportConfig:
     REPORT_READY_POLL_INTERVAL_SECONDS = float(
         os.getenv("QIANNIU_REPORT_READY_POLL_INTERVAL_SECONDS", "1.2")
     )
+    _raw_platform = os.getenv("QIANNIU_PLATFORM", "auto").strip().lower()
+    PLATFORM = _raw_platform if _raw_platform in {"auto", "taobao", "douyin"} else "auto"
 
 
 class ExcelConfig:

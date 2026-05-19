@@ -58,9 +58,13 @@ pyinstaller --onefile --noconsole main.py
    - `qianiu_auto_report/drivers/chromedriver`（或 `chromedriver.exe`）
 2. 提供一份简短“使用说明”文本（双击运行、导出路径、常见错误）。
 3. 非技术人员首次使用时只需：
-   - 双击可执行文件
-   - 登录千牛
-   - 点击执行
+   - 双击可执行文件，进入 GUI「报表助手」
+   - 平台不确定时保持 `自动识别`
+   - 点击 `开始生成`
+   - 在程序唤起的工作浏览器中自行选择淘宝或抖店页面并登录
+   - 回到 GUI 点击 `我已登录，开始生成报表`
+   - 等待桌面生成报表
+   - 如需继续跑另一个店铺或账号，在浏览器里切换登录后再次点击 `我已登录，开始生成报表`
 4. 如果出现“导出页面地址未配置”，让维护人员修改 `config.py` 后重新打包。
 
 ## 4. 常见问题
@@ -68,3 +72,5 @@ pyinstaller --onefile --noconsole main.py
 - 缺少驱动：检查 `chromedriver` 路径配置。
 - 模板不存在：检查 `template.xlsx` 是否在模板目录。
 - 无法导出：检查千牛页面元素定位是否与当前版本一致。
+- Windows 用户不需要手动启动 9222 Chrome；GUI 会执行 Windows 对应的 Chrome 启动命令并带上 9222 调试端口。
+- 调试人员如需保留旧命令行流程，可运行 `python main.py --cli`。

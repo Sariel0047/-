@@ -132,9 +132,12 @@ def snapshot_directory(directory: Path) -> dict[str, tuple[int, int]]:
     """
     snapshot: dict[str, tuple[int, int]] = {}
     for file_path in Path(directory).iterdir():
-        if file_path.is_file():
-            stat = file_path.stat()
-            snapshot[file_path.name] = (stat.st_size, stat.st_mtime_ns)
+        try:
+            if file_path.is_file():
+                stat = file_path.stat()
+                snapshot[file_path.name] = (stat.st_size, stat.st_mtime_ns)
+        except FileNotFoundError:
+            continue
     return snapshot
 
 
@@ -162,12 +165,35 @@ def wait_for_download_complete(
 
     timeout_at = time.time() + timeout_seconds
     trigger_ts = start_time if start_time is not None else time.time()
-    baseline = previous_snapshot or snapshot_directory(target_dir)
+    trigger_ts_ns = int(trigger_ts * 1_000_000_000)
+    baseline = previous_snapshot if previous_snapshot is not None else snapshot_directory(target_dir)
     stable_size_cache: dict[str, int] = {}
 
     while time.time() < timeout_at:
-        all_files = [file for file in target_dir.iterdir() if file.is_file()]
-        temp_files = [file for file in all_files if file.suffix.lower() in temp_suffixes]
+        all_files: list[Path] = []
+        for file_path in target_dir.iterdir():
+            try:
+                if file_path.is_file():
+                    all_files.append(file_path)
+            except FileNotFoundError:
+                continue
+        active_temp_files: list[Path] = []
+        for file_path in all_files:
+            if file_path.suffix.lower() not in temp_suffixes:
+                continue
+            try:
+                stat = file_path.stat()
+            except FileNotFoundError:
+                # Chrome 可能在本轮轮询中刚好把临时文件重命名掉，属于正常竞态。
+                continue
+            old_size, old_mtime_ns = baseline.get(file_path.name, (None, None))
+            # 仅把“本次任务期间新增或发生变化”的临时文件视作阻塞条件。
+            if old_size is None or old_mtime_ns is None:
+                if stat.st_mtime_ns >= trigger_ts_ns - int(3e9):
+                    active_temp_files.append(file_path)
+                continue
+            if stat.st_size != old_size or stat.st_mtime_ns != old_mtime_ns:
+                active_temp_files.append(file_path)
 
         candidates: list[Path] = []
         for file_path in all_files:
@@ -176,23 +202,44 @@ def wait_for_download_complete(
             if file_filter is not None and not file_filter(file_path):
                 continue
 
-            stat = file_path.stat()
-            if file_path.name not in baseline and stat.st_mtime >= trigger_ts:
+            try:
+                stat = file_path.stat()
+            except FileNotFoundError:
+                continue
+            if file_path.name not in baseline:
                 candidates.append(file_path)
                 continue
 
             old_size, old_mtime_ns = baseline.get(file_path.name, (None, None))
             if old_size is None or old_mtime_ns is None:
                 continue
-            if stat.st_size != old_size and stat.st_mtime >= trigger_ts:
+            if stat.st_size != old_size or stat.st_mtime_ns != old_mtime_ns:
                 candidates.append(file_path)
 
-        if not candidates or temp_files:
+        if not candidates or active_temp_files:
             time.sleep(poll_interval_seconds)
             continue
 
-        latest = max(candidates, key=lambda item: item.stat().st_mtime)
-        current_size = latest.stat().st_size
+        latest: Path | None = None
+        latest_mtime: float | None = None
+        for item in candidates:
+            try:
+                item_stat = item.stat()
+            except FileNotFoundError:
+                continue
+            if latest is None or item_stat.st_mtime > (latest_mtime or float("-inf")):
+                latest = item
+                latest_mtime = item_stat.st_mtime
+
+        if latest is None:
+            time.sleep(poll_interval_seconds)
+            continue
+
+        try:
+            current_size = latest.stat().st_size
+        except FileNotFoundError:
+            time.sleep(poll_interval_seconds)
+            continue
         previous_size = stable_size_cache.get(latest.name)
         if previous_size is not None and previous_size == current_size:
             return latest
