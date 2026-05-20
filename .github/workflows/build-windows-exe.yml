@@ -47,7 +47,7 @@ jobs:
 
       - name: Run tests
         run: |
-          python -m pytest -q tests/test_data_process.py tests/test_excel_writer.py tests/test_utils.py
+          python -m pytest -q tests/test_browser_runtime.py tests/test_gui_text.py tests/test_gui_state.py tests/test_data_process.py tests/test_excel_writer.py tests/test_utils.py
 
       - name: Build EXE
         shell: pwsh

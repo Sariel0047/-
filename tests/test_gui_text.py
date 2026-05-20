@@ -51,20 +51,31 @@ def test_format_output_dir_label_prefers_short_desktop_name() -> None:
     assert format_output_dir_label(Path("/tmp/custom-output")) == "/tmp/custom-output"
 
 
-def test_build_work_browser_command_uses_exact_macos_debug_chrome_shape() -> None:
+def test_build_work_browser_command_uses_direct_macos_debug_chrome_shape() -> None:
     """
-    macOS 只负责执行用户指定的 9222 Chrome 启动命令。
+    macOS 直接启动 Chrome 可执行文件并带上 9222 参数，避免 open 命令吞掉启动失败。
     """
     command = build_work_browser_command(system_name="Darwin", home_dir=Path("/Users/demo"))
 
     assert command == [
-        "open",
-        "-na",
-        "Google Chrome",
-        "--args",
+        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
         "--remote-debugging-port=9222",
         "--user-data-dir=/Users/demo/.qianiu_chrome_profile",
     ]
+
+
+def test_build_work_browser_command_respects_configured_macos_chrome_path() -> None:
+    """
+    macOS 允许显式指定 Chrome 路径，便于处理非默认安装位置。
+    """
+    command = build_work_browser_command(
+        system_name="Darwin",
+        home_dir=Path("/Users/demo"),
+        chrome_binary_path="/Custom/Chrome",
+    )
+
+    assert command[0] == "/Custom/Chrome"
+    assert "--remote-debugging-port=9222" in command
 
 
 def test_build_work_browser_command_uses_windows_start_command() -> None:

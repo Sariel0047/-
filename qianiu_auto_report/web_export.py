@@ -8,6 +8,7 @@ import json
 import os
 import re
 import socket
+import subprocess
 import sys
 import time
 from urllib.error import URLError
@@ -31,6 +32,7 @@ from selenium.webdriver.remote.webelement import WebElement
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
 
+from qianiu_auto_report.browser_runtime import driver_matches_browser_major
 from qianiu_auto_report.config import (
     ATTACH_TO_EXISTING_BROWSER,
     CHROME_BINARY_PATH,
@@ -669,6 +671,7 @@ class WebExporter:
         self.wait: Optional[WebDriverWait] = None
         self.download_dir: Optional[Path] = None
         self._is_attached_session = False
+        self._debugger_browser_version = ""
 
     def _split_debugger_address(self) -> tuple[str, int]:
         """
@@ -731,6 +734,7 @@ class WebExporter:
                 f"\n调试接口：{endpoint}"
                 f"\n返回内容：{payload}"
             )
+        self._debugger_browser_version = browser_name
 
     @staticmethod
     def _normalize_url_prefix(prefix: str) -> str:
@@ -8555,7 +8559,7 @@ class WebExporter:
 
         for candidate in candidates:
             try:
-                if candidate.exists() and candidate.is_file():
+                if candidate.exists() and candidate.is_file() and self._is_chromedriver_compatible(candidate):
                     return candidate
             except OSError:
                 continue
@@ -8573,9 +8577,47 @@ class WebExporter:
         if not cached_candidates:
             return None
 
-        best = max(cached_candidates, key=lambda item: item.stat().st_mtime)
+        compatible_candidates = [
+            path for path in cached_candidates if self._is_chromedriver_compatible(path)
+        ]
+        if not compatible_candidates:
+            self._log_step("本地缓存 chromedriver 与当前 Chrome 版本不匹配，改用 Selenium Manager 自动匹配驱动。")
+            return None
+
+        best = max(compatible_candidates, key=lambda item: item.stat().st_mtime)
         self._log_step(f"使用缓存 chromedriver：{best}")
         return best
+
+    def _is_chromedriver_compatible(self, path: Path) -> bool:
+        """
+        附着调试浏览器时，跳过与当前 Chrome 主版本不一致的 chromedriver。
+        """
+        browser_version = self._debugger_browser_version
+        if not self.attach_to_existing_browser or not browser_version:
+            return True
+
+        try:
+            result = subprocess.run(
+                [str(path), "--version"],
+                capture_output=True,
+                text=True,
+                timeout=3,
+                check=False,
+            )
+        except Exception:
+            return True
+
+        driver_version = f"{result.stdout or ''}\n{result.stderr or ''}"
+        if driver_matches_browser_major(
+            driver_version_text=driver_version,
+            browser_version_text=browser_version,
+        ):
+            return True
+
+        self._log_step(
+            f"跳过版本不匹配的 chromedriver：{path}（{driver_version.strip() or '未识别版本'}；当前 {browser_version}）"
+        )
+        return False
 
     def validate_runtime_config(self) -> None:
         """

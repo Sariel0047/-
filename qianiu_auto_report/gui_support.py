@@ -82,6 +82,12 @@ def resolve_chrome_executable(
     if system == "Linux":
         return "google-chrome"
 
+    if system == "Darwin":
+        default_macos_chrome = Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome")
+        if default_macos_chrome.exists():
+            return str(default_macos_chrome)
+        return str(default_macos_chrome)
+
     return "Google Chrome"
 
 
@@ -103,7 +109,11 @@ def build_work_browser_command(
     ]
 
     if system == "Darwin":
-        return ["open", "-na", "Google Chrome", "--args", *args]
+        executable = resolve_chrome_executable(
+            system_name=system,
+            chrome_binary_path=chrome_binary_path,
+        )
+        return [executable, *args]
 
     if system == "Windows":
         executable = resolve_chrome_executable(
