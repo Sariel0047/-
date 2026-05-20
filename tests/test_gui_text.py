@@ -48,14 +48,14 @@ def test_format_output_dir_label_prefers_short_desktop_name() -> None:
     输出目录若为桌面，应优先显示“桌面”，避免把长路径堆到界面里。
     """
     assert format_output_dir_label(Path.home() / "Desktop") == "桌面"
-    assert format_output_dir_label(Path("/tmp/custom-output")) == "/tmp/custom-output"
+    assert format_output_dir_label("custom-output") == str(Path("custom-output"))
 
 
 def test_build_work_browser_command_uses_direct_macos_debug_chrome_shape() -> None:
     """
     macOS 直接启动 Chrome 可执行文件并带上 9222 参数，避免 open 命令吞掉启动失败。
     """
-    command = build_work_browser_command(system_name="Darwin", home_dir=Path("/Users/demo"))
+    command = build_work_browser_command(system_name="Darwin", home_dir="/Users/demo")
 
     assert command == [
         "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
@@ -70,7 +70,7 @@ def test_build_work_browser_command_respects_configured_macos_chrome_path() -> N
     """
     command = build_work_browser_command(
         system_name="Darwin",
-        home_dir=Path("/Users/demo"),
+        home_dir="/Users/demo",
         chrome_binary_path="/Custom/Chrome",
     )
 
@@ -82,11 +82,12 @@ def test_build_work_browser_command_uses_windows_start_command() -> None:
     """
     Windows 下用系统 start 命令唤起 Chrome，并带上同样的 9222 参数。
     """
-    command = build_work_browser_command(system_name="Windows", home_dir=Path("C:/Users/demo"))
+    command = build_work_browser_command(system_name="Windows", home_dir=r"C:\Users\demo")
 
-    assert command[:5] == ["cmd", "/c", "start", "", "chrome"]
+    assert command[:4] == ["cmd", "/c", "start", ""]
+    assert command[4].lower().endswith(("chrome", "chrome.exe"))
     assert "--remote-debugging-port=9222" in command
-    assert "--user-data-dir=C:/Users/demo/.qianiu_chrome_profile" in command
+    assert r"--user-data-dir=C:\Users\demo\.qianiu_chrome_profile" in command
 
 
 def test_resolve_chrome_executable_prefers_configured_path_on_windows() -> None:

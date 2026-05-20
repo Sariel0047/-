@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import os
 import platform
+from pathlib import PurePosixPath, PureWindowsPath
 from pathlib import Path
 
 
@@ -101,7 +102,14 @@ def build_work_browser_command(
     构造唤起 9222 工作浏览器的系统命令。
     """
     system = system_name or platform.system()
-    home = Path.home() if home_dir is None else Path(home_dir)
+    if home_dir is None:
+        home = Path.home()
+    elif system == "Windows":
+        home = PureWindowsPath(home_dir)
+    elif system in {"Darwin", "Linux"}:
+        home = PurePosixPath(home_dir)
+    else:
+        home = Path(home_dir)
     profile_dir = str(home / ".qianiu_chrome_profile")
     args = [
         "--remote-debugging-port=9222",
