@@ -10,6 +10,9 @@ from pathlib import PurePosixPath, PureWindowsPath
 from pathlib import Path
 
 
+DEFAULT_MACOS_CHROME_EXECUTABLE = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+
+
 def format_platform_label(platform: str) -> str:
     """
     将内部平台值转换为更适合界面展示的文案。
@@ -84,10 +87,7 @@ def resolve_chrome_executable(
         return "google-chrome"
 
     if system == "Darwin":
-        default_macos_chrome = Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome")
-        if default_macos_chrome.exists():
-            return str(default_macos_chrome)
-        return str(default_macos_chrome)
+        return DEFAULT_MACOS_CHROME_EXECUTABLE
 
     return "Google Chrome"
 
