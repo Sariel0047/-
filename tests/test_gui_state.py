@@ -256,3 +256,19 @@ def test_auto_platform_context_keeps_default_url_for_managed_browser(monkeypatch
 
     assert exporter.export_url == "https://myseller.taobao.com/home.htm/QnworkbenchHome/"
     assert exporter.expected_url_prefix == "https://myseller.taobao.com/"
+
+
+def test_taobao_platform_context_restores_default_urls_after_auto_attach(monkeypatch: object) -> None:
+    """
+    附着模式自动识别会先放宽 URL；识别为淘宝后必须恢复默认入口，避免导出配置为空。
+    """
+    AppGUI = _load_gui_with_dependency_stubs(monkeypatch)
+    fake = _FakeBrowserGUI()
+    exporter = _ContextExporter(attach_to_existing_browser=True)
+    exporter.export_url = ""
+    exporter.expected_url_prefix = ""
+
+    AppGUI._apply_platform_context(fake, exporter, "taobao")
+
+    assert exporter.export_url == "https://myseller.taobao.com/home.htm/QnworkbenchHome/"
+    assert exporter.expected_url_prefix == "https://myseller.taobao.com/"

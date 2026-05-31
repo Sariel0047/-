@@ -756,6 +756,10 @@ class AppGUI:
             exporter.expected_url_prefix = "https://fxg.jinritemai.com/"
             if not (exporter.login_url or "").strip():
                 exporter.login_url = exporter.export_url
+        elif platform == "taobao":
+            exporter.export_url = ExportConfig.EXPORT_URL
+            exporter.expected_url_prefix = ExportConfig.EXPECTED_URL_PREFIX
+            exporter.login_url = ExportConfig.LOGIN_URL
         elif platform == "auto" and getattr(exporter, "attach_to_existing_browser", self.attach_mode):
             exporter.export_url = ""
             exporter.expected_url_prefix = ""

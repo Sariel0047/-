@@ -10,6 +10,7 @@ from pathlib import PurePosixPath, PureWindowsPath
 from pathlib import Path
 
 
+DEFAULT_MACOS_CHROME_APP_NAME = "Google Chrome"
 DEFAULT_MACOS_CHROME_EXECUTABLE = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
 
 
@@ -117,11 +118,9 @@ def build_work_browser_command(
     ]
 
     if system == "Darwin":
-        executable = resolve_chrome_executable(
-            system_name=system,
-            chrome_binary_path=chrome_binary_path,
-        )
-        return [executable, *args]
+        if not chrome_binary_path.strip():
+            return ["open", "-na", DEFAULT_MACOS_CHROME_APP_NAME, "--args", *args]
+        return [chrome_binary_path.strip(), *args]
 
     if system == "Windows":
         executable = resolve_chrome_executable(

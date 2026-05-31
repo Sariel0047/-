@@ -51,14 +51,17 @@ def test_format_output_dir_label_prefers_short_desktop_name() -> None:
     assert format_output_dir_label("custom-output") == str(Path("custom-output"))
 
 
-def test_build_work_browser_command_uses_direct_macos_debug_chrome_shape() -> None:
+def test_build_work_browser_command_uses_macos_launchservices_for_default_chrome() -> None:
     """
-    macOS 直接启动 Chrome 可执行文件并带上 9222 参数，避免 open 命令吞掉启动失败。
+    macOS 默认通过 LaunchServices 启动 Chrome，避免从 Rosetta Python 进程继承错误架构。
     """
     command = build_work_browser_command(system_name="Darwin", home_dir="/Users/demo")
 
     assert command == [
-        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+        "open",
+        "-na",
+        "Google Chrome",
+        "--args",
         "--remote-debugging-port=9222",
         "--user-data-dir=/Users/demo/.qianiu_chrome_profile",
     ]

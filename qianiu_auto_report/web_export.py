@@ -2844,7 +2844,13 @@ class WebExporter:
         """
         采集推广费用：推广 -> 万相台ai无界 -> 报表 -> 人群报表 -> 周期昨天 -> 花费（元）。
         """
-        self._open_promotion_then_wanxiangtai_page()
+        try:
+            self._open_promotion_then_wanxiangtai_page()
+        except TimeoutException as exc:
+            if "未找到【万相台ai无界】入口" not in str(exc):
+                raise
+            self._log_step("未找到万相台ai无界入口，推广费用按 0.00 处理")
+            return 0.0
         if self._is_promotion_unavailable_page():
             self._log_step("万相台无界暂无权限，推广费用按 0.00 处理")
             return 0.0

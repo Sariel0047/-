@@ -960,6 +960,25 @@ def test_get_wanxiangtai_entry_href_uses_selector_fallback() -> None:
     assert exporter._get_wanxiangtai_entry_href().startswith("https://one.alimama.com/")
 
 
+def test_collect_promotion_fee_defaults_zero_when_wanxiangtai_entry_missing() -> None:
+    """
+    推广中心没有万相台入口时，推广费用按 0 处理，不中断整店报表流程。
+    """
+    exporter = WebExporter()
+    logs: list[str] = []
+
+    exporter._open_promotion_then_wanxiangtai_page = lambda: (_ for _ in ()).throw(  # type: ignore[method-assign]
+        TimeoutException("未找到【万相台ai无界】入口（含 XPath: //*[@id='mx_98']/a）。")
+    )
+    exporter._open_promotion_report_page = lambda: (_ for _ in ()).throw(  # type: ignore[method-assign]
+        AssertionError("should not continue to report page")
+    )
+    exporter._log_step = lambda message: logs.append(message)  # type: ignore[method-assign]
+
+    assert exporter._collect_promotion_fee() == 0.0
+    assert any("未找到万相台ai无界入口" in item for item in logs)
+
+
 def test_build_douyin_metrics_maps_compass_values_to_report_fields() -> None:
     """
     抖店罗盘三指标应正确映射到现有报表字段。

@@ -9,3 +9,4 @@ dist/
 *.spec.bak
 qianiu_auto_report/output/
 qianiu_auto_report/logs/
+.venv-arm64/
