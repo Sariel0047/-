@@ -6467,15 +6467,49 @@ class WebExporter:
         """
         在弹出的日期面板中点击指定日期。
         """
+        target_month = self._calendar_month_index(report_date)
+        for _ in range(36):
+            if self._click_exact_calendar_day(report_date):
+                return True
+
+            visible_months = self._visible_calendar_month_indexes()
+            if not visible_months:
+                return False
+
+            first_month = min(visible_months)
+            last_month = max(visible_months)
+            if target_month < first_month:
+                if not self._click_calendar_month_nav("prev"):
+                    return False
+            elif target_month > last_month:
+                if not self._click_calendar_month_nav("next"):
+                    return False
+            else:
+                # 目标月份已可见但找不到完整日期，不能退化成只按“31”之类的数字点击。
+                return False
+            time.sleep(max(self.ui_poll_interval_seconds, 0.12))
+
+        return self._click_exact_calendar_day(report_date)
+
+    @staticmethod
+    def _calendar_month_index(date_text: str) -> int:
+        """
+        将 YYYY-MM-DD / YYYY-MM 转成可比较的月份序号。
+        """
+        year = int(date_text[:4])
+        month = int(date_text[5:7])
+        return year * 12 + month
+
+    def _click_exact_calendar_day(self, report_date: str) -> bool:
+        """
+        只点击能通过完整日期属性确认的日历格子。
+        """
         driver = self._ensure_driver()
-        day = str(int(report_date[-2:]))
         xpaths = (
             f"//*[@title='{report_date}']",
             f"//*[contains(@title,'{report_date}')]",
             f"//*[contains(@aria-label,'{report_date}')]",
             f"//*[contains(@data-date,'{report_date}')]",
-            f"//*[contains(@class,'cell') and normalize-space()='{day}']",
-            f"//*[contains(@class,'day') and normalize-space()='{day}']",
         )
 
         for xpath in xpaths:
@@ -6494,6 +6528,98 @@ class WebExporter:
                     if not (220 <= x <= 980 and 180 <= y <= 920):
                         continue
                     self._click_with_retry(element)
+                    return True
+                except Exception:
+                    continue
+        return False
+
+    def _visible_calendar_month_indexes(self) -> list[int]:
+        """
+        读取当前日期面板可见的月份。
+        """
+        driver = self._ensure_driver()
+        try:
+            raw_months = driver.execute_script(
+                """
+                function visible(el) {
+                  const rect = el.getBoundingClientRect();
+                  const style = getComputedStyle(el);
+                  return !!(rect.width && rect.height && style.display !== 'none' && style.visibility !== 'hidden');
+                }
+                const headers = Array.from(
+                  document.querySelectorAll(
+                    '.next-date-picker2-overlay[aria-hidden="false"] .next-calendar2-header, ' +
+                    '.next-date-picker2-overlay .next-calendar2-header, ' +
+                    '.next-calendar2-header'
+                  )
+                ).filter(visible);
+                const result = [];
+                const seen = new Set();
+                for (const header of headers) {
+                  const text = String(header.innerText || header.textContent || '').replace(/\\s+/g, '');
+                  const match = text.match(/(\\d{4})年(\\d{1,2})月/);
+                  if (!match) continue;
+                  const key = `${match[1]}-${match[2]}`;
+                  if (seen.has(key)) continue;
+                  seen.add(key);
+                  result.push([Number(match[1]), Number(match[2])]);
+                }
+                return result;
+                """
+            )
+        except Exception:
+            return []
+
+        months: list[int] = []
+        if not isinstance(raw_months, list):
+            return months
+
+        for item in raw_months:
+            try:
+                if isinstance(item, dict):
+                    year = int(item.get("year"))
+                    month = int(item.get("month"))
+                elif isinstance(item, (list, tuple)) and len(item) >= 2:
+                    year = int(item[0])
+                    month = int(item[1])
+                else:
+                    match = re.search(r"(\d{4})\D+(\d{1,2})", str(item))
+                    if not match:
+                        continue
+                    year = int(match.group(1))
+                    month = int(match.group(2))
+                if 1 <= month <= 12:
+                    months.append(year * 12 + month)
+            except Exception:
+                continue
+        return months
+
+    def _click_calendar_month_nav(self, direction: str) -> bool:
+        """
+        点击日期面板的上一月/下一月按钮。
+        """
+        driver = self._ensure_driver()
+        icon_class = "next-icon-arrow-left" if direction == "prev" else "next-icon-arrow-right"
+        xpaths = (
+            "//*[contains(@class,'next-date-picker2-overlay') and not(@aria-hidden='true')]"
+            f"//button[.//*[contains(concat(' ', normalize-space(@class), ' '), ' {icon_class} ')]]",
+            f"//button[.//*[contains(concat(' ', normalize-space(@class), ' '), ' {icon_class} ')]]",
+        )
+        for xpath in xpaths:
+            try:
+                buttons = driver.find_elements(By.XPATH, xpath)
+            except Exception:
+                continue
+            for button in buttons:
+                try:
+                    if not button.is_displayed() or not button.is_enabled():
+                        continue
+                    rect = button.rect
+                    x = float(rect.get("x", -1))
+                    y = float(rect.get("y", -1))
+                    if not (220 <= x <= 980 and 180 <= y <= 920):
+                        continue
+                    self._click_with_retry(button)
                     return True
                 except Exception:
                     continue

@@ -188,8 +188,15 @@ def test_set_home_period_last_1day_accepts_statistics_date_fallback() -> None:
     exporter._try_click_selector = lambda *args, **kwargs: True  # type: ignore[method-assign]
     exporter._click_text_with_wait = lambda *args, **kwargs: False  # type: ignore[method-assign]
     exporter._click_home_period_last_1day_by_js = lambda: False  # type: ignore[method-assign]
+    exporter._get_home_period_active_label = lambda: "实时"  # type: ignore[method-assign]
     exporter._is_home_period_last_1day_selected = lambda: False  # type: ignore[method-assign]
-    exporter._is_home_statistics_date_target = lambda report_date: True  # type: ignore[method-assign]
+    statistics_checks = {"count": 0}
+
+    def _fake_statistics_date_target(_report_date: str) -> bool:
+        statistics_checks["count"] += 1
+        return statistics_checks["count"] > 1
+
+    exporter._is_home_statistics_date_target = _fake_statistics_date_target  # type: ignore[method-assign]
     exporter._log_step = lambda message: logs.append(message)  # type: ignore[method-assign]
     exporter._raise_timeout_with_context = lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("should not timeout"))  # type: ignore[method-assign]
 
@@ -759,6 +766,80 @@ def test_collect_cross_border_value_added_fee_does_not_fallback_to_page_total_af
     assert not any("扣费金额合计" in item for item in calls)
 
 
+def test_click_calendar_day_rejects_same_day_from_wrong_month() -> None:
+    """
+    收支账单日期兜底不能只按“31”点击，否则日历停在 7 月时会误选 2026-07-31。
+    """
+    exporter = WebExporter()
+    clicks: list[str] = []
+
+    class _CalendarCell(_FakeElement):
+        rect = {"x": 430, "y": 310}
+
+        def __init__(self) -> None:
+            super().__init__(text="31", attrs={"title": "2026-07-31"})
+
+    class _Driver:
+        def find_elements(self, by: str, value: str) -> list[_FakeElement]:
+            if by == By.XPATH and "normalize-space()='31'" in value:
+                return [_CalendarCell()]
+            return []
+
+    exporter.driver = _Driver()  # type: ignore[assignment]
+    exporter._click_with_retry = lambda element: clicks.append(element.get_attribute("title"))  # type: ignore[method-assign]
+
+    assert exporter._click_calendar_day("2026-05-31") is False
+    assert clicks == []
+
+
+def test_click_calendar_day_navigates_to_target_month_before_clicking(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    目标日期不在当前双月面板时，应先翻到目标月份，再按完整 title 点击日期。
+    """
+    exporter = WebExporter()
+    calls: list[str] = []
+    state = {"left_month": 6}
+
+    monkeypatch.setattr("qianiu_auto_report.web_export.time.sleep", lambda _seconds: None)
+
+    class _CalendarCell(_FakeElement):
+        rect = {"x": 430, "y": 600}
+
+        def __init__(self) -> None:
+            super().__init__(text="31", attrs={"title": "2026-05-31"})
+
+    class _NavButton(_FakeElement):
+        rect = {"x": 317, "y": 409}
+
+    class _Driver:
+        def execute_script(self, *_args, **_kwargs) -> list[list[int]]:
+            return [[2026, state["left_month"]], [2026, state["left_month"] + 1]]
+
+        def find_elements(self, by: str, value: str) -> list[_FakeElement]:
+            if by != By.XPATH:
+                return []
+            if "2026-05-31" in value and state["left_month"] == 5:
+                return [_CalendarCell()]
+            if "next-icon-arrow-left" in value:
+                return [_NavButton()]
+            return []
+
+    def _fake_click(element: _FakeElement) -> None:
+        if isinstance(element, _NavButton):
+            calls.append("prev")
+            state["left_month"] = 5
+            return
+        calls.append(element.get_attribute("title"))
+
+    exporter.driver = _Driver()  # type: ignore[assignment]
+    exporter._click_with_retry = _fake_click  # type: ignore[method-assign]
+
+    assert exporter._click_calendar_day("2026-05-31") is True
+    assert calls == ["prev", "2026-05-31"]
+
+
 def test_collect_trade_compensation_amount_raises_before_search_when_reason_not_confirmed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -817,6 +898,7 @@ def test_collect_trade_compensation_amount_clicks_search_when_reason_text_is_sta
     exporter._get_account_reason_input_value = lambda: "交易赔付"  # type: ignore[attr-defined]
     exporter._click_blank_area = lambda: calls.append("blank")  # type: ignore[method-assign]
     exporter._log_account_details_filter_state = lambda: calls.append("log_filter_state")  # type: ignore[method-assign]
+    exporter._snapshot_account_details_rows = lambda: "before rows"  # type: ignore[attr-defined]
     exporter._click_account_details_search_button = lambda: calls.append("search")  # type: ignore[method-assign]
     exporter._wait_account_details_results_settled = lambda previous_snapshot=None: calls.append("wait_results")  # type: ignore[attr-defined]
     exporter._account_details_visible_rows_match_reason = lambda reason_text: True  # type: ignore[attr-defined]
@@ -1173,6 +1255,7 @@ def test_open_douyin_compass_page_falls_back_to_direct_url_when_click_does_not_s
     exporter._try_click_selector = lambda *args, **kwargs: False  # type: ignore[method-assign]
     exporter._click_text_with_wait = lambda *args, **kwargs: False  # type: ignore[method-assign]
     exporter._wait_switch_to_douyin_compass_page = lambda *args, **kwargs: False  # type: ignore[method-assign]
+    exporter._wait_dom_ready = lambda: calls.append(("wait_dom", ""))  # type: ignore[method-assign]
     exporter._is_douyin_compass_page_by_content = lambda: False  # type: ignore[method-assign]
     exporter._wait_until = lambda *args, **kwargs: None  # type: ignore[method-assign]
     exporter._promotion_pause = lambda scale=1.0: None  # type: ignore[method-assign]
