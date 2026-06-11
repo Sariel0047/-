@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+from datetime import date
 import pytest
 
 pytest.importorskip("selenium")
@@ -22,11 +23,13 @@ class _FakeElement:
         displayed: bool = True,
         enabled: bool = True,
         attrs: dict[str, str] | None = None,
+        children: dict[tuple[str, str], list["_FakeElement"]] | None = None,
     ) -> None:
         self.text = text
         self._displayed = displayed
         self._enabled = enabled
         self._attrs = attrs or {}
+        self._children = children or {}
 
     def is_displayed(self) -> bool:
         return self._displayed
@@ -38,7 +41,7 @@ class _FakeElement:
         return self._attrs.get(name, "")
 
     def find_elements(self, by: str, value: str) -> list["_FakeElement"]:
-        return []
+        return list(self._children.get((by, value), []))
 
 
 class _FakeDriver:
@@ -59,8 +62,16 @@ class _ClickableElement(_FakeElement):
         clicks: list[str] | None = None,
         name: str = "",
         on_click: object | None = None,
+        attrs: dict[str, str] | None = None,
+        children: dict[tuple[str, str], list[_FakeElement]] | None = None,
     ) -> None:
-        super().__init__(text=text, displayed=displayed, enabled=enabled)
+        super().__init__(
+            text=text,
+            displayed=displayed,
+            enabled=enabled,
+            attrs=attrs,
+            children=children,
+        )
         self.clicks = clicks if clicks is not None else []
         self.name = name or text
         self.on_click = on_click
@@ -178,6 +189,136 @@ def test_collect_home_metrics_switches_speed_before_extracting() -> None:
     assert call_order.index("set_period_1day") < call_order.index("extract:支付金额")
 
 
+def test_collect_home_metrics_uses_qianniu_data_for_explicit_report_date() -> None:
+    """
+    指定历史日期时，首页核心指标应从千牛极速版【数据】页读取。
+    """
+    exporter = WebExporter()
+    call_order: list[str] = []
+
+    exporter._collect_qianniu_data_dashboard_metrics = lambda report_date: call_order.append(f"qn-data:{report_date}") or {  # type: ignore[method-assign]
+        "shop_name": "好梦轻奢裙裤",
+        "payment_amount": 515.0,
+        "payment_buyer_count": 4,
+        "payment_sub_order_count": 5,
+    }
+    exporter._navigate_to_url = lambda url: call_order.append(f"navigate:{url}")  # type: ignore[method-assign]
+    exporter._switch_to_speed_version_if_needed = lambda: call_order.append("switch_speed")  # type: ignore[method-assign]
+    exporter._set_home_period_last_1day = lambda: call_order.append("set_period_1day")  # type: ignore[method-assign]
+
+    metrics = exporter._collect_home_dashboard_metrics(report_date=date(2026, 6, 7))
+
+    assert metrics == {
+        "shop_name": "好梦轻奢裙裤",
+        "payment_amount": 515.0,
+        "payment_buyer_count": 4,
+        "payment_sub_order_count": 5,
+    }
+    assert call_order == ["qn-data:2026-06-07"]
+
+
+def test_extract_qianniu_data_metric_prefers_top_overview() -> None:
+    """
+    千牛极速版【数据】页应只读顶部全店数据区域，避开下方商品表格同名列。
+    """
+    exporter = WebExporter()
+    exporter._page_text_snippet = lambda max_length=12000: (  # type: ignore[method-assign]
+        "全店数据 全部数据 统计时间 2026-06-07 实 时 日 周 月 "
+        "支付金额 515.00 299.22% 较去年同期 店铺客户数 148 "
+        "支付买家数 4 300.00% 较去年同期 净支付金额 317.00 "
+        "支付子订单数 5 400.00% "
+        "商品 流量 商品 支付金额 594.00 成功退款金额 396.00 支付件数 6"
+    )
+
+    assert exporter._extract_qianniu_data_metric("支付金额") == 515.0
+    assert exporter._extract_qianniu_data_metric("支付买家数") == 4.0
+    assert exporter._extract_qianniu_data_metric("支付子订单数") == 5.0
+
+
+def test_click_qianniu_data_calendar_day_clicks_title_cell_directly(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    千牛日历已渲染目标 td[title=日期] 时，应直接点击该日期格。
+    """
+    clicks: list[str] = []
+    inner = _ClickableElement("7", clicks=clicks, name="inner-7")
+    cell = _ClickableElement(
+        "7",
+        clicks=clicks,
+        name="td-2026-06-07",
+        attrs={"class": "tbd-picker-cell tbd-picker-cell-in-view", "title": "2026-06-07"},
+        children={(By.CSS_SELECTOR, ".tbd-picker-cell-inner"): [inner]},
+    )
+    exporter = WebExporter()
+    exporter.driver = _FakeDriver(
+        {
+            (By.CSS_SELECTOR, ".tbd-picker-dropdown td[title='2026-06-07']"): [cell],
+        }
+    )  # type: ignore[assignment]
+
+    class FakeActionChains:
+        def __init__(self, _driver: object) -> None:
+            self.element: _FakeElement | None = None
+
+        def move_to_element(self, element: _FakeElement) -> "FakeActionChains":
+            self.element = element
+            return self
+
+        def pause(self, _seconds: float) -> "FakeActionChains":
+            return self
+
+        def click(self) -> "FakeActionChains":
+            if self.element is not None:
+                self.element.click()  # type: ignore[attr-defined]
+            return self
+
+        def perform(self) -> None:
+            return None
+
+    monkeypatch.setattr("qianiu_auto_report.web_export.ActionChains", FakeActionChains)
+
+    assert exporter._click_qianniu_data_calendar_day("2026-06-07") is True
+    assert clicks == ["inner-7"]
+
+
+def test_set_qianniu_data_dashboard_day_waits_for_overview_refresh() -> None:
+    """
+    切换千牛数据页日期后，应等待顶部全店数据片段刷新，避免读取旧指标。
+    """
+    exporter = WebExporter()
+    calls: list[object] = []
+
+    exporter._is_qianniu_data_report_date_selected = lambda target: False  # type: ignore[method-assign]
+    exporter._qianniu_data_overview_metric_signature = lambda: (89.0, 1.0, 1.0)  # type: ignore[attr-defined]
+    exporter._click_qianniu_data_day_button = lambda: calls.append("click_day") or True  # type: ignore[method-assign]
+    exporter._is_qianniu_data_calendar_open = lambda: True  # type: ignore[method-assign]
+    exporter._click_qianniu_data_calendar_day = lambda target: calls.append(("click_date", target)) or True  # type: ignore[method-assign]
+    exporter._wait_until = lambda predicate, **_kwargs: calls.append(("wait_date", predicate()))  # type: ignore[method-assign]
+    exporter._wait_qianniu_data_dashboard_refresh = lambda target, before: calls.append(("wait_refresh", target, before))  # type: ignore[attr-defined]
+    exporter._log_step = lambda message: calls.append(("log", message))  # type: ignore[method-assign]
+    exporter.ui_poll_interval_seconds = 0.0
+
+    exporter._set_qianniu_data_dashboard_day("2026-06-07")
+
+    assert ("wait_refresh", "2026-06-07", (89.0, 1.0, 1.0)) in calls
+
+
+def test_extract_sycm_metric_prefers_card_value_after_label() -> None:
+    """
+    生意参谋指标读取应取指标名后的主值，避开同比/对比值。
+    """
+    exporter = WebExporter()
+    exporter._page_text_snippet = lambda max_length=12000: (  # type: ignore[method-assign]
+        "数据概览 2026-06-07 ~ 2026-06-07 支付金额 515.00 较对比周期 299.22% "
+        "支付买家数 4 较对比周期 300.00% 支付子订单数 5 较对比周期 400.00%"
+    )
+
+    assert exporter._extract_sycm_metric("支付金额") == 515.0
+    assert exporter._extract_sycm_metric("支付买家数") == 4.0
+    assert exporter._extract_sycm_metric("支付子订单数") == 5.0
+
+
 def test_set_home_period_last_1day_accepts_statistics_date_fallback() -> None:
     """
     若“近1天”选中态无法稳定识别，但统计时间已是目标日期，应视为成功。
@@ -247,6 +388,27 @@ def test_extract_home_shop_name_cleans_combined_text_from_exact_xpath() -> None:
             ): [_FakeElement(text="好梦轻奢裙裤 店铺成长层级 Lv.5 保证金 已足额缴纳")],
         }
     )
+
+    assert exporter._extract_home_shop_name() == "好梦轻奢裙裤"
+
+
+def test_extract_home_shop_name_uses_qianniu_shell_shop_name_without_store_suffix() -> None:
+    """
+    千牛顶部壳层的 shopName 节点即使不带“店”字，也应作为店铺名。
+    """
+    exporter = WebExporter()
+
+    class _Driver:
+        def find_elements(self, _by: str, _value: str) -> list[_FakeElement]:
+            return []
+
+        def execute_script(self, script: str) -> str:
+            if "shopName" in script:
+                return "好梦轻奢裙裤"
+            return ""
+
+    exporter.driver = _Driver()  # type: ignore[assignment]
+    exporter._page_text_snippet = lambda max_length=10000: "全店数据 支付金额 525.00"  # type: ignore[method-assign]
 
     assert exporter._extract_home_shop_name() == "好梦轻奢裙裤"
 
@@ -467,6 +629,61 @@ def test_sum_outgoing_amount_on_account_details_filters_by_date_and_reason() -> 
     )
 
     assert total == 13.23
+
+
+def test_set_date_range_inputs_uses_native_input_setter() -> None:
+    """
+    日期输入应通过原生 value setter 和 input/change 事件触发前端状态更新。
+    """
+    exporter = WebExporter()
+    calls: list[tuple[str, object]] = []
+
+    class _Driver:
+        def execute_script(self, script: str, start_date: str, end_date: str) -> bool:
+            calls.append(("script", script))
+            calls.append(("dates", (start_date, end_date)))
+            return True
+
+    exporter.driver = _Driver()  # type: ignore[assignment]
+
+    assert exporter._set_date_range_inputs("2026-06-07", "2026-06-07") is True
+    assert calls[-1] == ("dates", ("2026-06-07", "2026-06-07"))
+    script = str(calls[0][1])
+    assert "HTMLInputElement.prototype" in script
+    assert "InputEvent" in script
+    assert "new Event('change'" in script
+
+
+def test_account_details_visible_rows_must_match_target_date() -> None:
+    """
+    账户明细搜索后可见行不能混入目标日期之外的完成时间。
+    """
+    exporter = WebExporter()
+    exporter._ensure_account_details_context = lambda: True  # type: ignore[method-assign]
+
+    class _FakeRow:
+        def __init__(self, date_text: str) -> None:
+            self.text = f"{date_text} 交易售后 出账 99.00"
+            self._cells = [_FakeElement(text=f"{date_text} 17:34:53")]
+
+        def is_displayed(self) -> bool:
+            return True
+
+        def find_elements(self, by: str, value: str) -> list[_FakeElement]:
+            if by == By.XPATH and value == "./td":
+                return self._cells
+            return []
+
+    exporter.driver = _FakeDriver(
+        mapping={
+            (
+                By.XPATH,
+                "//*[@id='app']/div[1]/div/div/div/div/div/div[2]/div[2]/div/div/div[3]/div[1]/div[2]/div[2]/table/tbody/tr",
+            ): [_FakeRow("2026-06-10"), _FakeRow("2026-06-07")],
+        }
+    )  # type: ignore[assignment]
+
+    assert exporter._account_details_visible_rows_match_date("2026-06-07") is False
 
 
 def test_sum_outgoing_amount_on_account_details_deduplicates_fixed_table_duplicate_rows() -> None:
@@ -792,6 +1009,32 @@ def test_click_calendar_day_rejects_same_day_from_wrong_month() -> None:
     assert clicks == []
 
 
+def test_click_calendar_day_accepts_exact_date_in_left_panel() -> None:
+    """
+    账户明细日期面板左侧月份的日期格 x 坐标较小，只要完整 title 匹配也应可点击。
+    """
+    exporter = WebExporter()
+    clicks: list[str] = []
+
+    class _CalendarCell(_FakeElement):
+        rect = {"x": 25, "y": 304}
+
+        def __init__(self) -> None:
+            super().__init__(text="7", attrs={"title": "2026-05-07"})
+
+    class _Driver:
+        def find_elements(self, by: str, value: str) -> list[_FakeElement]:
+            if by == By.XPATH and "2026-05-07" in value:
+                return [_CalendarCell()]
+            return []
+
+    exporter.driver = _Driver()  # type: ignore[assignment]
+    exporter._click_with_retry = lambda element: clicks.append(element.get_attribute("title"))  # type: ignore[method-assign]
+
+    assert exporter._click_calendar_day("2026-05-07") is True
+    assert clicks == ["2026-05-07"]
+
+
 def test_click_calendar_day_navigates_to_target_month_before_clicking(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -840,6 +1083,47 @@ def test_click_calendar_day_navigates_to_target_month_before_clicking(
     assert calls == ["prev", "2026-05-31"]
 
 
+def test_account_details_date_selected_requires_start_and_end_date() -> None:
+    """
+    账户明细不能只因结束日期等于目标日期就误判单日筛选已生效。
+    """
+    exporter = WebExporter()
+    exporter._extract_account_details_date_tokens = lambda: ["2026-06-07"]  # type: ignore[method-assign]
+
+    assert exporter._is_account_details_date_selected("2026-06-07") is False
+
+
+def test_select_account_details_single_day_clicks_calendar_date_twice(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    账户明细指定单日时，应通过日历组件连续选择目标日期，避免直接改 input 后被重渲染还原。
+    """
+    exporter = WebExporter()
+    calls: list[object] = []
+
+    monkeypatch.setattr("qianiu_auto_report.web_export.time.sleep", lambda _seconds: None)
+
+    exporter._ensure_account_details_context = lambda: calls.append("context")  # type: ignore[method-assign]
+    exporter._is_account_details_date_selected = lambda report_date: len(  # type: ignore[method-assign]
+        [item for item in calls if item == ("click_date", report_date)]
+    ) >= 2
+    exporter._open_account_details_date_picker = lambda: calls.append("open_picker") or True  # type: ignore[attr-defined]
+    exporter._click_calendar_day = lambda report_date: calls.append(("click_date", report_date)) or True  # type: ignore[method-assign]
+    exporter._click_blank_area = lambda: calls.append("blank")  # type: ignore[method-assign]
+    exporter._set_date_range_inputs = lambda start, end: calls.append(("set_inputs", start, end)) or True  # type: ignore[method-assign]
+
+    exporter._select_account_details_single_day("2026-06-07")
+
+    assert calls[:4] == [
+        "context",
+        "open_picker",
+        ("click_date", "2026-06-07"),
+        ("click_date", "2026-06-07"),
+    ]
+    assert ("set_inputs", "2026-06-07", "2026-06-07") not in calls
+
+
 def test_collect_trade_compensation_amount_raises_before_search_when_reason_not_confirmed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -856,6 +1140,7 @@ def test_collect_trade_compensation_amount_raises_before_search_when_reason_not_
     exporter._wait_account_details_filters_ready = lambda: calls.append("wait_ready")  # type: ignore[method-assign]
     exporter._log_step = lambda message: calls.append(f"log:{message}")  # type: ignore[method-assign]
     exporter._select_account_details_yesterday = lambda: calls.append("select_yesterday")  # type: ignore[method-assign]
+    exporter._is_account_details_date_selected = lambda report_date: True  # type: ignore[method-assign]
     exporter._select_account_reason_trade_compensation = lambda: False  # type: ignore[method-assign]
     exporter._click_blank_area = lambda: calls.append("blank")  # type: ignore[method-assign]
     exporter._log_account_details_filter_state = lambda: calls.append("log_filter_state")  # type: ignore[method-assign]
@@ -893,6 +1178,7 @@ def test_collect_trade_compensation_amount_clicks_search_when_reason_text_is_sta
     exporter._wait_account_details_filters_ready = lambda: calls.append("wait_ready")  # type: ignore[method-assign]
     exporter._log_step = lambda message: calls.append(f"log:{message}")  # type: ignore[method-assign]
     exporter._select_account_details_yesterday = lambda: calls.append("select_yesterday")  # type: ignore[method-assign]
+    exporter._is_account_details_date_selected = lambda report_date: True  # type: ignore[method-assign]
     exporter._select_account_reason_trade_compensation = lambda: True  # type: ignore[method-assign]
     exporter._is_account_reason_selected = lambda _reason: False  # type: ignore[method-assign]
     exporter._get_account_reason_input_value = lambda: "交易赔付"  # type: ignore[attr-defined]
@@ -901,6 +1187,7 @@ def test_collect_trade_compensation_amount_clicks_search_when_reason_text_is_sta
     exporter._snapshot_account_details_rows = lambda: "before rows"  # type: ignore[attr-defined]
     exporter._click_account_details_search_button = lambda: calls.append("search")  # type: ignore[method-assign]
     exporter._wait_account_details_results_settled = lambda previous_snapshot=None: calls.append("wait_results")  # type: ignore[attr-defined]
+    exporter._account_details_visible_rows_match_date = lambda report_date: True  # type: ignore[attr-defined]
     exporter._account_details_visible_rows_match_reason = lambda reason_text: True  # type: ignore[attr-defined]
     exporter._sum_outgoing_amount_on_account_details = lambda report_date=None, reason_text=None: 9.03  # type: ignore[method-assign]
     exporter.interaction_delay_seconds = 0.0
@@ -908,6 +1195,42 @@ def test_collect_trade_compensation_amount_clicks_search_when_reason_text_is_sta
     assert exporter._collect_trade_compensation_amount() == 9.03
     assert "search" in calls
     assert "wait_results" in calls
+
+
+def test_collect_trade_compensation_amount_uses_explicit_report_date(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    淘宝账户明细应按用户选择的日期筛选和汇总交易赔付。
+    """
+    exporter = WebExporter()
+    calls: list[object] = []
+
+    monkeypatch.setattr("qianiu_auto_report.web_export.time.sleep", lambda _seconds: None)
+
+    exporter._navigate_to_account_details_page = lambda: calls.append("navigate")  # type: ignore[method-assign]
+    exporter._close_corner_popup_if_present = lambda: calls.append("close_popup")  # type: ignore[method-assign]
+    exporter._wait_account_details_filters_ready = lambda: calls.append("wait_ready")  # type: ignore[method-assign]
+    exporter._log_step = lambda message: calls.append(f"log:{message}")  # type: ignore[method-assign]
+    exporter._select_account_details_single_day = lambda report_date: calls.append(("select_date", report_date))  # type: ignore[method-assign]
+    exporter._is_account_details_date_selected = lambda report_date: True  # type: ignore[method-assign]
+    exporter._select_account_reason_trade_compensation = lambda: True  # type: ignore[method-assign]
+    exporter._is_account_reason_ready_for_search = lambda reason_text: True  # type: ignore[method-assign]
+    exporter._click_blank_area = lambda: calls.append("blank")  # type: ignore[method-assign]
+    exporter._log_account_details_filter_state = lambda: calls.append("log_filter_state")  # type: ignore[method-assign]
+    exporter._snapshot_account_details_rows = lambda: "before rows"  # type: ignore[attr-defined]
+    exporter._click_account_details_search_button = lambda: calls.append("search")  # type: ignore[method-assign]
+    exporter._wait_account_details_results_settled = lambda previous_snapshot=None: calls.append("wait_results")  # type: ignore[attr-defined]
+    exporter._account_details_visible_rows_match_date = lambda report_date: True  # type: ignore[attr-defined]
+    exporter._account_details_visible_rows_match_reason = lambda reason_text: True  # type: ignore[attr-defined]
+    exporter._sum_outgoing_amount_on_account_details = lambda report_date=None, reason_text=None: calls.append(("sum", report_date, reason_text)) or 12.34  # type: ignore[method-assign]
+    exporter.interaction_delay_seconds = 0.0
+
+    target_date = date(2026, 5, 14)
+
+    assert exporter._collect_trade_compensation_amount(report_date=target_date) == 12.34
+    assert ("select_date", "2026-05-14") in calls
+    assert ("sum", "2026-05-14", "交易赔付") in calls
 
 
 def test_is_account_reason_selected_rejects_placeholder_mixed_text() -> None:
@@ -1121,6 +1444,24 @@ def test_extract_douyin_metric_prefers_value_immediately_after_label() -> None:
     assert WebExporter._extract_metric_value_after_label_from_text(text, "成交金额") == 108936.0
     assert WebExporter._extract_metric_value_after_label_from_text(text, "成交订单数") == 784.0
     assert WebExporter._extract_metric_value_after_label_from_text(text, "支出金额") == 1745.05
+
+
+def test_extract_douyin_compass_metric_treats_placeholder_as_zero_before_script_fallback() -> None:
+    """
+    支出金额为占位符时，不能误取后续“投放消耗（店铺被投）”金额。
+    """
+    exporter = WebExporter()
+    exporter._page_text_snippet = lambda max_length=30000: (  # type: ignore[method-assign]
+        "收支概况 支出金额 -- 较上期 -- 投放消耗（店铺被投） ¥ 45.65"
+    )
+
+    class Driver:
+        def execute_script(self, _script: str, _label: str) -> str:
+            return "¥ 45.65"
+
+    exporter.driver = Driver()  # type: ignore[assignment]
+
+    assert exporter._extract_douyin_compass_metric("支出金额") == 0.0
 
 
 def test_collect_douyin_compass_metrics_reads_three_core_values() -> None:

@@ -5,12 +5,14 @@
 from __future__ import annotations
 
 import os
+from datetime import date, datetime
 from pathlib import Path
 import sys
 import traceback
 from typing import TYPE_CHECKING, Any
 
 from qianiu_auto_report.config import (
+    DateConfig,
     EXCEL_OUTPUT_DIR,
     ExportConfig,
     PROCESSED_OUTPUT_DIR,
@@ -136,6 +138,19 @@ def ensure_runtime_directories() -> None:
         directory.mkdir(parents=True, exist_ok=True)
 
 
+def normalize_report_date(report_date: date | datetime | str | None = None) -> date:
+    """
+    将报表日期统一为 date；未传时使用默认“昨天”。
+    """
+    if report_date is None:
+        return DateConfig.default_report_date()
+    if isinstance(report_date, datetime):
+        return report_date.date()
+    if isinstance(report_date, date):
+        return report_date
+    return datetime.strptime(str(report_date).strip(), DateConfig.DATE_FORMAT).date()
+
+
 def build_output_paths() -> dict[str, Path]:
     """
     生成处理结果和最终报表输出路径。
@@ -157,11 +172,21 @@ def export_data(web_exporter: "WebExporter", download_dir: Path) -> Path:
     return exported_file
 
 
-def collect_business_finance_metrics(web_exporter: "WebExporter", download_dir: Path) -> dict[str, Any]:
+def collect_business_finance_metrics(
+    web_exporter: "WebExporter",
+    download_dir: Path,
+    report_date: date | datetime | str | None = None,
+) -> dict[str, Any]:
     """
     提取退款管理之外的业务/财务指标。
     """
-    metrics = web_exporter.collect_business_finance_metrics(download_dir=download_dir)
+    if report_date is None:
+        metrics = web_exporter.collect_business_finance_metrics(download_dir=download_dir)
+    else:
+        metrics = web_exporter.collect_business_finance_metrics(
+            download_dir=download_dir,
+            report_date=normalize_report_date(report_date),
+        )
     if not isinstance(metrics, dict):
         raise TypeError("web_export.collect_business_finance_metrics 必须返回 dict。")
     return metrics
@@ -171,6 +196,7 @@ def collect_platform_metrics(
     web_exporter: "WebExporter",
     target_platform: str,
     download_dir: Path,
+    report_date: date | datetime | str | None = None,
 ) -> dict[str, Any]:
     """
     按平台路由采集指标。
@@ -183,7 +209,11 @@ def collect_platform_metrics(
         return metrics
 
     if target_platform == "taobao":
-        metrics = collect_business_finance_metrics(web_exporter=web_exporter, download_dir=download_dir)
+        metrics = collect_business_finance_metrics(
+            web_exporter=web_exporter,
+            download_dir=download_dir,
+            report_date=report_date,
+        )
         metrics.setdefault("platform", "taobao")
         return metrics
 
@@ -194,6 +224,7 @@ def collect_platform_metrics_batch(
     web_exporter: "WebExporter",
     target_platform: str,
     download_dir: Path,
+    report_date: date | datetime | str | None = None,
 ) -> list[dict[str, Any]]:
     """
     按平台采集一组指标。抖音支持切换多个店铺，淘宝保持单店铺流程。
@@ -210,7 +241,14 @@ def collect_platform_metrics_batch(
                 metrics.setdefault("platform", "douyin")
             return metrics_list
 
-    return [collect_platform_metrics(web_exporter=web_exporter, target_platform=target_platform, download_dir=download_dir)]
+    return [
+        collect_platform_metrics(
+            web_exporter=web_exporter,
+            target_platform=target_platform,
+            download_dir=download_dir,
+            report_date=report_date,
+        )
+    ]
 
 
 def write_business_finance_reports(
@@ -235,11 +273,16 @@ def process_data(
     data_processor: "DataProcessor",
     input_path: Path,
     processed_path: Path,
+    report_date: date | datetime | str | None = None,
 ) -> Any:
     """
     调用数据处理模块处理原始数据。
     """
-    return data_processor.process(input_path=input_path, output_path=processed_path)
+    return data_processor.process(
+        input_path=input_path,
+        output_path=processed_path,
+        report_date=normalize_report_date(report_date),
+    )
 
 
 def write_excel(
@@ -308,7 +351,7 @@ def format_failure_message(stage: str, exc: Exception) -> str:
     return "\n".join(lines)
 
 
-def run_pipeline() -> bool:
+def run_pipeline(report_date: date | datetime | str | None = None) -> bool:
     """
     串联导出、处理、写入三个模块并返回执行状态。
     """
@@ -317,6 +360,7 @@ def run_pipeline() -> bool:
 
     try:
         ensure_runtime_directories()
+        selected_report_date = normalize_report_date(report_date)
         paths = build_output_paths()
 
         stage = "加载业务模块"
@@ -347,6 +391,7 @@ def run_pipeline() -> bool:
                 web_exporter=web_exporter,
                 target_platform=target_platform,
                 download_dir=paths["download_dir"],
+                report_date=selected_report_date,
             )
             for index, metrics in enumerate(metrics_list, start=1):
                 print(
@@ -388,6 +433,7 @@ def run_pipeline() -> bool:
                 web_exporter=web_exporter,
                 target_platform=target_platform,
                 download_dir=paths["download_dir"],
+                report_date=selected_report_date,
             )
             print(
                 "提取结果："
@@ -420,6 +466,7 @@ def run_pipeline() -> bool:
                 data_processor=data_processor,
                 input_path=exported_file,
                 processed_path=paths["processed_path"],
+                report_date=selected_report_date,
             )
 
         if ExportConfig.SKIP_EXCEL_WRITE:

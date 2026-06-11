@@ -395,7 +395,6 @@ class AppGUI:
         ttk.Entry(
             body,
             textvariable=self.date_var,
-            state="readonly",
         ).grid(row=1, column=1, sticky="ew", pady=(0, 10))
 
         tk.Label(
@@ -728,6 +727,17 @@ class AppGUI:
             return value
         return "auto"
 
+    def _get_selected_report_date(self) -> str:
+        """
+        读取并校验 GUI 中的报表日期。
+        """
+        value = (self.date_var.get() or "").strip()
+        try:
+            parsed = datetime.strptime(value, DateConfig.DATE_FORMAT)
+        except ValueError as exc:
+            raise ValueError("报表日期格式不正确，请输入 YYYY-MM-DD，例如 2026-05-13。") from exc
+        return parsed.strftime(DateConfig.DATE_FORMAT)
+
     def _resolve_target_platform(self, current_url: str) -> tuple[str, str]:
         """
         解析 GUI 运行时的目标平台。
@@ -865,6 +875,7 @@ class AppGUI:
             download_dir = self.output_dir
             processed_path = PROCESSED_OUTPUT_DIR / "processed_report.xlsx"
             selected_platform = self._get_selected_platform()
+            report_date = self._get_selected_report_date()
             if self.web_exporter is None:
                 self.web_exporter = self._create_web_exporter()
                 self._apply_platform_context(self.web_exporter, selected_platform)
@@ -887,12 +898,18 @@ class AppGUI:
                     metrics_list = self.web_exporter.collect_douyin_all_shop_metrics(download_dir=download_dir)
                     metrics = metrics_list[0] if metrics_list else None
                 else:
-                    metrics = self.web_exporter.collect_business_finance_metrics(download_dir=download_dir)
+                    metrics = self.web_exporter.collect_business_finance_metrics(
+                        download_dir=download_dir,
+                        report_date=report_date,
+                    )
                     metrics_list = [metrics]
             else:
                 exported_file = self.web_exporter.export_after_login(download_dir=download_dir)
                 self.root.after(0, self.append_log, "我已经把退款明细下载好了。")
-                metrics = self.web_exporter.collect_business_finance_metrics(download_dir=download_dir)
+                metrics = self.web_exporter.collect_business_finance_metrics(
+                    download_dir=download_dir,
+                    report_date=report_date,
+                )
                 metrics_list = [metrics]
 
             for index, item in enumerate(metrics_list or [], start=1):
@@ -930,7 +947,11 @@ class AppGUI:
                 if exported_file is None:
                     raise RuntimeError("我没拿到可整理的数据文件。")
                 processor = DataProcessor()
-                summary = processor.process(input_path=exported_file, output_path=processed_path)
+                summary = processor.process(
+                    input_path=exported_file,
+                    output_path=processed_path,
+                    report_date=report_date,
+                )
 
             if ExportConfig.SKIP_EXCEL_WRITE:
                 report_file = None

@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 from datetime import date
+from pathlib import Path
 
 from openpyxl import Workbook
 import pandas as pd
@@ -98,6 +99,34 @@ def test_summarize_refund_metrics_by_goods_status_and_finished_date(monkeypatch)
 
     assert return_refund["count"] == 1
     assert return_refund["amount"] == 40.0
+
+
+def test_process_filters_by_explicit_report_date(tmp_path: Path) -> None:
+    """
+    指定报表日期时，应按该日期筛选退款完结时间，而不是默认昨天。
+    """
+    input_file = tmp_path / "refunds.xlsx"
+    pd.DataFrame(
+        {
+            "退款完结时间": [
+                "2026-03-29 08:00:00",
+                "2026-03-31 09:00:00",
+            ],
+            "货物状态": ["未发货", "已寄回"],
+            "退款总额": ["10.00", "99.00"],
+            "售后类型": ["其他", "其他"],
+        }
+    ).to_excel(input_file, index=False)
+
+    summary = DataProcessor().process(
+        input_path=input_file,
+        output_path=tmp_path / "processed.xlsx",
+        report_date=date(2026, 3, 29),
+    )
+
+    assert summary["total_count"] == 1
+    assert summary["total_amount"] == 10.0
+    assert summary["categories"]["未发货仅退款"]["count"] == 1
 
 
 def test_summarize_douyin_refund_analysis_detail_by_stage_columns(tmp_path) -> None:

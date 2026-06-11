@@ -114,7 +114,6 @@ class ExportConfig:
     DOWNLOAD_WAIT_SECONDS = 30
     # 是否跳过“退款管理页面自动操作”。
     # 默认值为 False（执行完整流程，便于输出 A+B 合并报表）。
-    # SKIP_REFUND_MANAGE_ACTIONS = "True"
     SKIP_REFUND_MANAGE_ACTIONS = os.getenv("QIANNIU_SKIP_REFUND_MANAGE_ACTIONS", "0").strip() in {
         "1",
         "true",

@@ -4,7 +4,7 @@
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 import re
 from typing import Any, Optional
@@ -271,13 +271,23 @@ class DataProcessor:
         """
         转换数据结构并筛选前一天数据。
         """
+        return self.transform_data_for_date(df=df, report_date=None)
+
+    def transform_data_for_date(
+        self,
+        df: pd.DataFrame,
+        report_date: date | datetime | str | None = None,
+    ) -> pd.DataFrame:
+        """
+        转换数据结构并筛选指定报表日期；未指定时默认前一天。
+        """
         transformed = df.copy()
 
         transformed["_parsed_date"] = pd.to_datetime(
             transformed[self.date_column],
             errors="coerce",
         )
-        target_date = get_previous_date()
+        target_date = self._normalize_report_date(report_date)
         transformed = transformed.loc[transformed["_parsed_date"].dt.date == target_date].copy()
 
         if transformed.empty:
@@ -308,6 +318,20 @@ class DataProcessor:
         transformed["_category"] = [pair[0] for pair in category_pairs]
         transformed["_sub_category"] = [pair[1] for pair in category_pairs]
         return transformed
+
+    @staticmethod
+    def _normalize_report_date(report_date: date | datetime | str | None = None) -> date:
+        """
+        将外部传入的报表日期统一为 date；未传时沿用默认“昨天”。
+        """
+        if report_date is None:
+            return get_previous_date()
+        if isinstance(report_date, datetime):
+            return report_date.date()
+        if isinstance(report_date, date):
+            return report_date
+        parsed = datetime.strptime(str(report_date).strip(), "%Y-%m-%d")
+        return parsed.date()
 
     def summarize_data(self, df: pd.DataFrame) -> dict[str, Any]:
         """
@@ -585,7 +609,12 @@ class DataProcessor:
         output_path.parent.mkdir(parents=True, exist_ok=True)
         export_df.to_excel(output_path, index=False)
 
-    def process(self, input_path: Path, output_path: Optional[Path] = None) -> dict[str, Any]:
+    def process(
+        self,
+        input_path: Path,
+        output_path: Optional[Path] = None,
+        report_date: date | datetime | str | None = None,
+    ) -> dict[str, Any]:
         """
         执行完整数据处理流程。
         """
@@ -598,7 +627,7 @@ class DataProcessor:
             return self._build_empty_summary()
 
         self.validate_columns(cleaned_df)
-        transformed_df = self.transform_data(cleaned_df)
+        transformed_df = self.transform_data_for_date(cleaned_df, report_date=report_date)
         self.processed_df = transformed_df
 
         if output_path is not None:

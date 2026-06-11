@@ -11,6 +11,7 @@ import socket
 import subprocess
 import sys
 import time
+from datetime import date, datetime
 from urllib.error import URLError
 from urllib.request import urlopen
 from pathlib import Path
@@ -60,6 +61,8 @@ class WebExporter:
     DOUYIN_AFTER_SALE_WORKBENCH_URL = (
         "https://fxg.jinritemai.com/ffa/merchant-aftersale-workbench/aftersale/list"
     )
+    QIANNIU_DATA_DASHBOARD_URL = "https://myseller.taobao.com/home.htm/op-sycm-data/"
+    SYCM_HOME_URL = "https://sycm.taobao.com/portal/home.htm"
 
     DEFAULT_SELECTORS: dict[str, tuple[Locator, ...]] = {
         "trade_menu": (
@@ -1465,6 +1468,20 @@ class WebExporter:
         输出关键步骤日志。
         """
         safe_log(message)
+
+    @staticmethod
+    def _format_report_date(report_date: date | datetime | str | None = None) -> str:
+        """
+        将报表日期格式化为 YYYY-MM-DD；未传时使用默认“昨天”。
+        """
+        if report_date is None:
+            return DateConfig.default_report_date_str()
+        if isinstance(report_date, datetime):
+            return report_date.date().strftime(DateConfig.DATE_FORMAT)
+        if isinstance(report_date, date):
+            return report_date.strftime(DateConfig.DATE_FORMAT)
+        parsed = datetime.strptime(str(report_date).strip(), DateConfig.DATE_FORMAT)
+        return parsed.strftime(DateConfig.DATE_FORMAT)
 
     def _count_visible_matches(self, selector_key: str) -> int:
         """
@@ -3233,6 +3250,9 @@ class WebExporter:
         if parsed_from_text is not None:
             return round(abs(parsed_from_text), 2)
 
+        if re.search(rf"{re.escape(label)}[^\n\r]{{0,20}}(--|—|-)", snippet):
+            return 0.0
+
         try:
             token = driver.execute_script(
                 """
@@ -3307,9 +3327,6 @@ class WebExporter:
             parsed = self._token_to_float(match.group(1))
             if parsed is not None:
                 return round(abs(parsed), 2)
-
-        if re.search(rf"{re.escape(label)}[^\n\r]{{0,20}}(--|—|-)", snippet):
-            return 0.0
 
         self._raise_timeout_with_context(
             f"未读取到抖店电商罗盘指标：{label}",
@@ -4955,6 +4972,722 @@ class WebExporter:
 
         raise TimeoutException(f"未读取到首页指标：{label}")
 
+    def _collect_qianniu_data_dashboard_metrics(self, report_date: date | datetime | str) -> dict[str, Any]:
+        """
+        从千牛极速版【数据】页按单日读取全店核心指标。
+        """
+        report_date_str = self._format_report_date(report_date)
+        self._open_qianniu_data_dashboard_page()
+        self._set_qianniu_data_dashboard_day(report_date_str)
+
+        payment_amount = self._extract_qianniu_data_metric("支付金额")
+        payment_buyers = self._extract_qianniu_data_metric("支付买家数")
+        payment_sub_orders = self._extract_qianniu_data_metric("支付子订单数")
+
+        shop_name = self._extract_home_shop_name()
+        if self._looks_like_qianniu_data_metric_text(shop_name):
+            shop_name = ""
+        return {
+            "shop_name": shop_name,
+            "payment_amount": round(float(payment_amount), 2),
+            "payment_buyer_count": int(round(payment_buyers)),
+            "payment_sub_order_count": int(round(payment_sub_orders)),
+        }
+
+    def _open_qianniu_data_dashboard_page(self) -> None:
+        """
+        打开千牛极速版左侧【数据】对应的全店数据页。
+        """
+        current_url = (self.get_current_url() or "").lower()
+        if "myseller.taobao.com/home.htm/op-sycm-data" in current_url:
+            return
+
+        if "myseller.taobao.com" in current_url:
+            self._switch_to_speed_version_if_needed()
+            clicked = self._click_left_panel_text_with_wait(
+                ("数据",),
+                exact=True,
+                timeout_seconds=3.0,
+                required=False,
+                step_name="已点击左侧菜单：数据",
+                min_left=0,
+                max_left=190,
+                min_top=120,
+            )
+            if clicked:
+                try:
+                    self._wait_until(
+                        lambda: "op-sycm-data" in (self.get_current_url() or "").lower()
+                        and self._page_contains_text("全店数据")
+                        and self._page_contains_text("支付金额"),
+                        timeout_seconds=max(self.timeout_seconds, 15),
+                        message="千牛数据页未加载完成。",
+                    )
+                    return
+                except TimeoutException:
+                    pass
+
+        self._log_step("改用 URL 直达千牛【数据】页")
+        self._navigate_to_url(self.QIANNIU_DATA_DASHBOARD_URL)
+        self._wait_until(
+            lambda: "op-sycm-data" in (self.get_current_url() or "").lower()
+            and self._page_contains_text("全店数据")
+            and self._page_contains_text("支付金额"),
+            timeout_seconds=max(self.timeout_seconds, 20),
+            message="千牛数据页未加载完成。",
+        )
+
+    def _set_qianniu_data_dashboard_day(self, report_date: str) -> None:
+        """
+        在千牛【数据】页顶部全店数据中选择指定单日。
+        """
+        target = self._format_report_date(report_date)
+        if self._is_qianniu_data_report_date_selected(target):
+            self._log_step(f"千牛数据页已选择日期：{target}")
+            return
+
+        before_metric_signature = self._qianniu_data_overview_metric_signature()
+        if not self._click_qianniu_data_day_button():
+            self._raise_timeout_with_context("千牛数据页未找到顶部【日】按钮。")
+        time.sleep(max(self.ui_poll_interval_seconds, 0.2))
+
+        if not self._is_qianniu_data_calendar_open():
+            _ = self._click_qianniu_data_current_date_field()
+            time.sleep(max(self.ui_poll_interval_seconds, 0.2))
+
+        if not self._click_qianniu_data_calendar_day(target):
+            self._raise_timeout_with_context(f"千牛数据页日历未能选择日期：{target}")
+
+        self._wait_until(
+            lambda: self._is_qianniu_data_report_date_selected(target),
+            timeout_seconds=max(self.timeout_seconds, 15),
+            message=f"千牛数据页统计时间未切换到：{target}",
+        )
+        self._wait_qianniu_data_dashboard_refresh(target, before_metric_signature)
+        self._log_step(f"千牛数据页已选择日期：{target}")
+
+    def _is_qianniu_data_report_date_selected(self, report_date: str) -> bool:
+        """
+        判断千牛【数据】页顶部全店数据统计时间是否为目标日期。
+        """
+        target = self._format_report_date(report_date)
+        snippet = self._page_text_snippet(max_length=4000)
+        section = self._slice_qianniu_data_overview_text(snippet)
+        compact = re.sub(r"\s+", "", section)
+        return f"统计时间{target}" in compact
+
+    def _qianniu_data_overview_text(self) -> str:
+        """
+        读取千牛【数据】页顶部全店数据区域文本。
+        """
+        return self._slice_qianniu_data_overview_text(self._page_text_snippet(max_length=8000))
+
+    def _qianniu_data_overview_metric_signature(self) -> tuple[Optional[float], Optional[float], Optional[float]]:
+        """
+        返回顶部三项核心指标签名，用于判断切换日期后的指标是否已刷新。
+        """
+        text = self._qianniu_data_overview_text()
+        return (
+            self._extract_metric_value_after_label_from_text(text, "支付金额"),
+            self._extract_metric_value_after_label_from_text(text, "支付买家数"),
+            self._extract_metric_value_after_label_from_text(text, "支付子订单数"),
+        )
+
+    def _wait_qianniu_data_dashboard_refresh(
+        self,
+        report_date: str,
+        before_metric_signature: tuple[Optional[float], Optional[float], Optional[float]],
+    ) -> None:
+        """
+        等待千牛【数据】页日期切换后的顶部指标完成异步刷新。
+        """
+        target = self._format_report_date(report_date)
+        if not any(value is not None for value in before_metric_signature):
+            time.sleep(max(self.interaction_delay_seconds, 0.5))
+            return
+
+        try:
+            self._wait_until(
+                lambda: self._is_qianniu_data_report_date_selected(target)
+                and self._qianniu_data_overview_metric_signature() != before_metric_signature,
+                timeout_seconds=max(min(self.timeout_seconds, 5), 2),
+                message=f"千牛数据页顶部指标未刷新到日期：{target}",
+            )
+        except TimeoutException:
+            if not self._is_qianniu_data_report_date_selected(target):
+                raise
+            self._log_step("千牛数据页日期已切换，顶部指标未检测到变化，短暂等待后继续")
+            time.sleep(max(self.interaction_delay_seconds, 0.8))
+
+    def _click_qianniu_data_day_button(self) -> bool:
+        """
+        点击顶部全店数据区域的【日】按钮。
+        """
+        driver = self._ensure_driver()
+        candidates: list[tuple[float, float, WebElement]] = []
+        try:
+            elements = driver.find_elements(By.XPATH, "//button[normalize-space()='日']")
+        except Exception:
+            elements = []
+
+        for element in elements:
+            try:
+                if not element.is_displayed() or not element.is_enabled():
+                    continue
+                rect = element.rect
+                y = float(rect.get("y", 9999))
+                x = float(rect.get("x", 0))
+                if y > 240:
+                    continue
+                candidates.append((y, -x, element))
+            except Exception:
+                continue
+
+        candidates.sort(key=lambda item: (item[0], item[1]))
+        for _y, _x, element in candidates:
+            try:
+                ActionChains(driver).move_to_element(element).pause(0.05).click().perform()
+                time.sleep(max(self.interaction_delay_seconds, 0.1))
+                return True
+            except Exception:
+                try:
+                    self._click_with_retry(element)
+                    time.sleep(max(self.interaction_delay_seconds, 0.1))
+                    return True
+                except Exception:
+                    continue
+        return False
+
+    def _click_qianniu_data_current_date_field(self) -> bool:
+        """
+        点击顶部统计时间文本，打开单日日期面板。
+        """
+        driver = self._ensure_driver()
+        try:
+            return bool(
+                driver.execute_script(
+                    """
+                    const normalize = (v) => String(v || '').replace(/\\s+/g, ' ').trim();
+                    const visible = (el) => {
+                      if (!el) return false;
+                      const style = getComputedStyle(el);
+                      const rect = el.getBoundingClientRect();
+                      return style.visibility !== 'hidden' && style.display !== 'none'
+                        && rect.width >= 60 && rect.height >= 12
+                        && rect.bottom >= 0 && rect.top <= window.innerHeight;
+                    };
+                    const nodes = Array.from(document.querySelectorAll('div, span, button'))
+                      .filter((el) => visible(el))
+                      .map((el) => ({ el, text: normalize(el.innerText || el.textContent), rect: el.getBoundingClientRect() }))
+                      .filter((item) => item.text.startsWith('统计时间 20') && item.rect.y <= Math.max(240, window.innerHeight * 0.42));
+                    nodes.sort((a, b) => (a.rect.width * a.rect.height) - (b.rect.width * b.rect.height));
+                    if (!nodes.length) return false;
+                    nodes[0].el.click();
+                    return true;
+                    """
+                )
+            )
+        except Exception:
+            return False
+
+    def _is_qianniu_data_calendar_open(self) -> bool:
+        """
+        判断千牛【数据】页单日日期面板是否已打开。
+        """
+        driver = self._ensure_driver()
+        try:
+            return bool(
+                driver.execute_script(
+                    """
+                    const normalize = (v) => String(v || '').replace(/\\s+/g, ' ').trim();
+                    const visible = (el) => {
+                      if (!el) return false;
+                      const style = getComputedStyle(el);
+                      const rect = el.getBoundingClientRect();
+                      return style.visibility !== 'hidden' && style.display !== 'none'
+                        && rect.width >= 220 && rect.height >= 180
+                        && rect.bottom >= 0 && rect.top <= window.innerHeight;
+                    };
+                    return Array.from(document.querySelectorAll('div, section'))
+                      .some((el) => visible(el) && /\\d{4}年\\s*\\d{1,2}月/.test(normalize(el.innerText || el.textContent)));
+                    """
+                )
+            )
+        except Exception:
+            return False
+
+    def _click_qianniu_data_calendar_day(self, report_date: str) -> bool:
+        """
+        在已打开的千牛单日日期面板中点击目标日期。
+        """
+        driver = self._ensure_driver()
+        target = self._format_report_date(report_date)
+        target_year, target_month, target_day = (int(part) for part in target.split("-"))
+
+        try:
+            cells = driver.find_elements(By.CSS_SELECTOR, f".tbd-picker-dropdown td[title='{target}']")
+        except Exception:
+            cells = []
+        for cell in cells:
+            try:
+                if not cell.is_displayed() or not cell.is_enabled():
+                    continue
+                cell_class = (cell.get_attribute("class") or "").lower()
+                if "disabled" in cell_class:
+                    continue
+                inner_nodes = [
+                    node
+                    for node in cell.find_elements(By.CSS_SELECTOR, ".tbd-picker-cell-inner")
+                    if node.is_displayed() and node.is_enabled()
+                ]
+                clickable = inner_nodes[0] if inner_nodes else cell
+                ActionChains(driver).move_to_element(clickable).pause(0.05).click().perform()
+                time.sleep(max(self.interaction_delay_seconds, 0.1))
+                return True
+            except Exception:
+                try:
+                    self._click_with_retry(cell)
+                    time.sleep(max(self.interaction_delay_seconds, 0.1))
+                    return True
+                except Exception:
+                    continue
+
+        for _ in range(14):
+            state = driver.execute_script(
+                """
+                const normalize = (v) => String(v || '').replace(/\\s+/g, ' ').trim();
+                const visible = (el) => {
+                  if (!el) return false;
+                  const style = getComputedStyle(el);
+                  const rect = el.getBoundingClientRect();
+                  return style.visibility !== 'hidden' && style.display !== 'none'
+                    && rect.width >= 220 && rect.height >= 180
+                    && rect.bottom >= 0 && rect.top <= window.innerHeight + 80;
+                };
+                const panels = Array.from(document.querySelectorAll('div, section'))
+                  .filter((el) => visible(el) && /\\d{4}年\\s*\\d{1,2}月/.test(normalize(el.innerText || el.textContent)))
+                  .map((el) => ({ el, text: normalize(el.innerText || el.textContent), rect: el.getBoundingClientRect() }));
+                panels.sort((a, b) => (a.rect.width * a.rect.height) - (b.rect.width * b.rect.height));
+                if (!panels.length) return null;
+                const match = panels[0].text.match(/(\\d{4})年\\s*(\\d{1,2})月/);
+                return match ? { year: Number(match[1]), month: Number(match[2]) } : null;
+                """
+            )
+            if not state:
+                return False
+
+            current_year = int(state.get("year", 0))
+            current_month = int(state.get("month", 0))
+            if current_year == target_year and current_month == target_month:
+                break
+
+            direction = "next" if (current_year, current_month) < (target_year, target_month) else "prev"
+            clicked_arrow = bool(
+                driver.execute_script(
+                    """
+                    const direction = arguments[0];
+                    const normalize = (v) => String(v || '').replace(/\\s+/g, ' ').trim();
+                    const visible = (el) => {
+                      if (!el) return false;
+                      const style = getComputedStyle(el);
+                      const rect = el.getBoundingClientRect();
+                      return style.visibility !== 'hidden' && style.display !== 'none'
+                        && rect.width >= 8 && rect.height >= 8
+                        && rect.bottom >= 0 && rect.top <= window.innerHeight + 80;
+                    };
+                    const panels = Array.from(document.querySelectorAll('div, section'))
+                      .filter((el) => visible(el) && /\\d{4}年\\s*\\d{1,2}月/.test(normalize(el.innerText || el.textContent)))
+                      .map((el) => ({ el, rect: el.getBoundingClientRect() }));
+                    panels.sort((a, b) => (a.rect.width * a.rect.height) - (b.rect.width * b.rect.height));
+                    if (!panels.length) return false;
+                    const panel = panels[0].el;
+                    const panelRect = panels[0].rect;
+                    const nodes = Array.from(panel.querySelectorAll('button, span, div, i, svg'))
+                      .filter(visible)
+                      .map((el) => ({ el, text: normalize(el.innerText || el.textContent), cls: String(el.className || '').toLowerCase(), rect: el.getBoundingClientRect() }))
+                      .filter((item) => item.rect.y <= panelRect.y + 70);
+                    const isNext = (item) => item.text === '›' || item.text === '>' || item.cls.includes('next') || item.cls.includes('right');
+                    const isPrev = (item) => item.text === '‹' || item.text === '<' || item.cls.includes('prev') || item.cls.includes('left');
+                    const candidates = nodes.filter(direction === 'next' ? isNext : isPrev)
+                      .filter((item) => !item.cls.includes('double'));
+                    candidates.sort((a, b) => direction === 'next' ? b.rect.x - a.rect.x : a.rect.x - b.rect.x);
+                    if (!candidates.length) return false;
+                    candidates[0].el.click();
+                    return true;
+                    """,
+                    direction,
+                )
+            )
+            if not clicked_arrow:
+                return False
+            time.sleep(max(self.ui_poll_interval_seconds, 0.2))
+
+        day_text = str(target_day)
+        try:
+            return bool(
+                driver.execute_script(
+                    """
+                    const dayText = String(arguments[0]);
+                    const normalize = (v) => String(v || '').replace(/\\s+/g, ' ').trim();
+                    const visible = (el) => {
+                      if (!el) return false;
+                      const style = getComputedStyle(el);
+                      const rect = el.getBoundingClientRect();
+                      return style.visibility !== 'hidden' && style.display !== 'none'
+                        && rect.width >= 14 && rect.height >= 14
+                        && rect.bottom >= 0 && rect.top <= window.innerHeight + 80;
+                    };
+                    const panels = Array.from(document.querySelectorAll('div, section'))
+                      .filter((el) => visible(el) && /\\d{4}年\\s*\\d{1,2}月/.test(normalize(el.innerText || el.textContent)))
+                      .map((el) => ({ el, rect: el.getBoundingClientRect() }));
+                    panels.sort((a, b) => (a.rect.width * a.rect.height) - (b.rect.width * b.rect.height));
+                    if (!panels.length) return false;
+                    const panel = panels[0].el;
+                    const nodes = Array.from(panel.querySelectorAll('td, button, div, span'))
+                      .filter(visible)
+                      .map((el) => ({ el, text: normalize(el.innerText || el.textContent), cls: String(el.className || '').toLowerCase(), rect: el.getBoundingClientRect() }))
+                      .filter((item) => item.text === dayText)
+                      .filter((item) => !item.cls.includes('disabled') && !item.cls.includes('outside') && !item.cls.includes('prev') && !item.cls.includes('next'));
+                    nodes.sort((a, b) => (a.rect.width * a.rect.height) - (b.rect.width * b.rect.height));
+                    if (!nodes.length) return false;
+                    nodes[0].el.click();
+                    return true;
+                    """,
+                    day_text,
+                )
+            )
+        except Exception:
+            return False
+
+    def _extract_qianniu_data_metric(self, label: str) -> float:
+        """
+        从千牛极速版【数据】页顶部全店数据区域读取指定指标。
+        """
+        token = ""
+        try:
+            driver = self._ensure_driver()
+            token = str(
+                driver.execute_script(
+                    """
+                    const targetLabel = String(arguments[0] || '').trim();
+                    const normalize = (v) => String(v || '').replace(/\\s+/g, ' ').trim();
+                    const visible = (el) => {
+                      if (!el) return false;
+                      const style = getComputedStyle(el);
+                      const rect = el.getBoundingClientRect();
+                      return style.visibility !== 'hidden' && style.display !== 'none'
+                        && rect.width >= 40 && rect.height >= 18
+                        && rect.bottom >= 0 && rect.top <= window.innerHeight + 120;
+                    };
+                    const parseValue = (text) => {
+                      const escaped = targetLabel.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&');
+                      const match = normalize(text).match(new RegExp('(?:^|[^\\\\u4e00-\\\\u9fffA-Za-z0-9])' + escaped + '\\\\s*[：:]?\\\\s*[¥￥]?\\\\s*([+\\\\-−]?\\\\d[\\\\d,]*(?:\\\\.\\\\d+)?)'));
+                      return match ? match[1] : '';
+                    };
+                    const isTargetBlock = (text) => {
+                      const raw = normalize(text);
+                      return raw === targetLabel
+                        || raw.startsWith(targetLabel + ' ')
+                        || raw.startsWith(targetLabel + '：')
+                        || raw.startsWith(targetLabel + ':');
+                    };
+                    const roots = Array.from(document.querySelectorAll('.index-oveview, [class*="index-oveview"], [class*="overview"]'))
+                      .filter(visible)
+                      .filter((el) => parseValue(normalize(el.innerText || '')));
+                    const root = roots[0] || document.body;
+                    const blocks = Array.from(root.querySelectorAll('.low-grid-item, [class*="grid-item"], [class*="common-wrapper"], div'))
+                      .filter(visible)
+                      .map((el) => ({ el, text: normalize(el.innerText || ''), rect: el.getBoundingClientRect() }))
+                      .filter((item) => isTargetBlock(item.text) && item.text.length <= 220);
+                    blocks.sort((a, b) => (a.rect.width * a.rect.height) - (b.rect.width * b.rect.height));
+                    for (const item of blocks) {
+                      const parsed = parseValue(item.text);
+                      if (parsed) return parsed;
+                    }
+                    return parseValue(normalize(root.innerText || ''));
+                    """,
+                    label,
+                )
+                or ""
+            )
+        except Exception:
+            token = ""
+
+        parsed = self._token_to_float(token)
+        if parsed is not None:
+            return round(abs(parsed), 2)
+
+        snippet = self._page_text_snippet(max_length=12000)
+        section = self._slice_qianniu_data_overview_text(snippet)
+        parsed_from_text = self._extract_metric_value_after_label_from_text(section, label)
+        if parsed_from_text is not None:
+            return round(abs(parsed_from_text), 2)
+
+        self._raise_timeout_with_context(f"未读取到千牛数据页指标：{label}")
+
+    @staticmethod
+    def _looks_like_qianniu_data_metric_text(text: str) -> bool:
+        """
+        识别被数据卡片误当成店铺名的文本。
+        """
+        normalized = re.sub(r"\s+", " ", str(text or "")).strip()
+        if not normalized:
+            return False
+        metric_labels = ("支付金额", "支付买家数", "支付子订单数", "店铺客户数", "净支付金额")
+        return any(label in normalized for label in metric_labels) and bool(re.search(r"\d", normalized))
+
+    @staticmethod
+    def _slice_qianniu_data_overview_text(text: str) -> str:
+        """
+        截取千牛【数据】页顶部全店数据区域，避开下方商品/流量表格。
+        """
+        normalized = re.sub(r"\s+", " ", str(text or "")).strip()
+        start = normalized.find("全店数据")
+        if start >= 0:
+            normalized = normalized[start:]
+        end_candidates = [
+            normalized.find(marker)
+            for marker in (" 商品 流量 ", "商品 流量", " 标准类目 ", " 指标选择 ")
+            if normalized.find(marker) > 0
+        ]
+        if end_candidates:
+            normalized = normalized[: min(end_candidates)]
+        return normalized
+
+    def _collect_sycm_dashboard_metrics(self, report_date: date | datetime | str) -> dict[str, Any]:
+        """
+        从生意参谋按自定义单日读取支付核心指标。
+        """
+        report_date_str = self._format_report_date(report_date)
+        self._open_sycm_dashboard_page()
+        self._set_sycm_custom_single_day(report_date_str)
+
+        payment_amount = self._extract_sycm_metric("支付金额")
+        payment_buyers = self._extract_sycm_metric("支付买家数")
+        try:
+            payment_sub_orders = self._extract_sycm_metric("支付子订单数")
+        except TimeoutException:
+            if not self._click_sycm_metric_next_page():
+                raise
+            time.sleep(max(self.ui_poll_interval_seconds, 0.2))
+            payment_sub_orders = self._extract_sycm_metric("支付子订单数")
+
+        shop_name = self._extract_home_shop_name()
+        return {
+            "shop_name": shop_name,
+            "payment_amount": round(float(payment_amount), 2),
+            "payment_buyer_count": int(round(payment_buyers)),
+            "payment_sub_order_count": int(round(payment_sub_orders)),
+        }
+
+    def _open_sycm_dashboard_page(self) -> None:
+        """
+        打开生意参谋首页。优先尝试千牛左侧【数据】，失败时 URL 直达。
+        """
+        if "sycm.taobao.com" in (self.get_current_url() or "").lower():
+            return
+
+        previous_handles = self._capture_window_handles()
+        clicked = self._click_left_panel_text_with_wait(
+            ("数据",),
+            exact=True,
+            timeout_seconds=3.0,
+            required=False,
+            step_name="已点击左侧菜单：数据",
+            min_left=0,
+            max_left=190,
+            min_top=120,
+        )
+        if clicked and self._wait_switch_to_sycm_page(previous_handles=previous_handles, timeout_seconds=8.0):
+            return
+
+        self._log_step("未能通过左侧【数据】进入生意参谋，改用 URL 直达")
+        self._navigate_to_url(self.SYCM_HOME_URL)
+        self._wait_until(
+            lambda: "sycm.taobao.com" in (self.get_current_url() or "").lower()
+            and self._page_contains_text("数据概览"),
+            timeout_seconds=max(self.timeout_seconds, 20),
+            message="生意参谋页面未加载完成。",
+        )
+
+    def _wait_switch_to_sycm_page(
+        self,
+        previous_handles: set[str],
+        timeout_seconds: float = 12.0,
+    ) -> bool:
+        """
+        等待点击【数据】后切换到生意参谋页面。
+        """
+        driver = self._ensure_driver()
+        end_time = time.time() + max(timeout_seconds, 2.0)
+        while time.time() < end_time:
+            handles = list(self._capture_window_handles())
+            new_handles = [handle for handle in handles if handle not in previous_handles]
+            ordered_handles = [*new_handles, *[handle for handle in handles if handle not in new_handles]]
+            for handle in ordered_handles:
+                try:
+                    driver.switch_to.window(handle)
+                    current_url = (driver.current_url or "").lower()
+                except Exception:
+                    continue
+                if "sycm.taobao.com" in current_url:
+                    self._wait_dom_ready()
+                    self._wait_until(
+                        lambda: self._page_contains_text("数据概览"),
+                        timeout_seconds=max(self.timeout_seconds, 15),
+                        message="生意参谋数据概览未加载完成。",
+                    )
+                    return True
+            time.sleep(max(self.ui_poll_interval_seconds, 0.15))
+        return False
+
+    def _set_sycm_custom_single_day(self, report_date: str) -> None:
+        """
+        在生意参谋选择自定义单日日期。
+        """
+        target = self._format_report_date(report_date)
+        if self._is_sycm_report_date_selected(target):
+            self._log_step(f"生意参谋已选择日期：{target}")
+            return
+
+        if not self._click_text_with_wait(("自定义",), exact=True, timeout_seconds=5.0, required=False):
+            self._raise_timeout_with_context("生意参谋未找到【自定义】日期按钮。")
+        time.sleep(max(self.ui_poll_interval_seconds, 0.2))
+
+        if not self._click_sycm_calendar_day(target):
+            self._raise_timeout_with_context(f"生意参谋未能选择日期：{target}")
+
+        if not self._click_text_with_wait(("确定",), exact=True, timeout_seconds=5.0, required=False):
+            self._raise_timeout_with_context("生意参谋日期面板未找到【确定】按钮。")
+
+        self._wait_until(
+            lambda: self._is_sycm_report_date_selected(target),
+            timeout_seconds=max(self.timeout_seconds, 12),
+            message=f"生意参谋日期未切换到：{target}",
+        )
+        self._log_step(f"生意参谋已选择日期：{target}")
+
+    def _is_sycm_report_date_selected(self, report_date: str) -> bool:
+        """
+        判断生意参谋日期是否已显示为指定单日。
+        """
+        target = self._format_report_date(report_date)
+        compact = re.sub(r"\s+", "", self._page_text_snippet(max_length=4000))
+        return f"{target}~{target}" in compact or f"{target}至{target}" in compact
+
+    def _click_sycm_calendar_day(self, report_date: str) -> bool:
+        """
+        点击生意参谋日期面板中的指定日期。当前先支持可见月份中的日期。
+        """
+        driver = self._ensure_driver()
+        target = self._format_report_date(report_date)
+        day_text = str(int(target.rsplit("-", 1)[1]))
+        try:
+            return bool(
+                driver.execute_script(
+                    """
+                    const target = String(arguments[0] || '');
+                    const dayText = String(arguments[1] || '');
+                    const normalize = (v) => String(v || '').replace(/\\s+/g, ' ').trim();
+                    const visible = (el) => {
+                      if (!el || el.offsetParent === null) return false;
+                      const rect = el.getBoundingClientRect();
+                      return rect.width >= 14 && rect.height >= 14 && rect.x >= 0 && rect.y >= 0 && rect.y <= window.innerHeight + 200;
+                    };
+                    const clickNode = (node) => {
+                      if (!node) return false;
+                      node.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+                      node.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+                      node.click();
+                      return true;
+                    };
+                    const byAttrs = Array.from(document.querySelectorAll('[title], [aria-label], [data-date]'))
+                      .filter(visible)
+                      .filter((el) => {
+                        const text = `${el.getAttribute('title') || ''} ${el.getAttribute('aria-label') || ''} ${el.getAttribute('data-date') || ''}`;
+                        return text.includes(target);
+                      });
+                    if (byAttrs.length) return clickNode(byAttrs[0]);
+
+                    const candidates = Array.from(document.querySelectorAll('td, div, span, a, button'))
+                      .filter(visible)
+                      .filter((el) => normalize(el.innerText || el.textContent || '') === dayText)
+                      .filter((el) => {
+                        const rect = el.getBoundingClientRect();
+                        return rect.y >= 250 && rect.y <= Math.min(window.innerHeight - 80, 820);
+                      });
+                    candidates.sort((a, b) => a.getBoundingClientRect().x - b.getBoundingClientRect().x);
+                    if (!candidates.length) return false;
+                    if (candidates.length >= 2) {
+                      clickNode(candidates[0]);
+                      clickNode(candidates[candidates.length - 1]);
+                      return true;
+                    }
+                    clickNode(candidates[0]);
+                    clickNode(candidates[0]);
+                    return true;
+                    """,
+                    target,
+                    day_text,
+                )
+            )
+        except Exception:
+            return False
+
+    def _extract_sycm_metric(self, label: str) -> float:
+        """
+        从生意参谋指标卡片中读取数值。
+        """
+        parsed_from_text = self._extract_metric_value_after_label_from_text(
+            self._page_text_snippet(max_length=12000),
+            label,
+        )
+        if parsed_from_text is not None:
+            return parsed_from_text
+        self._raise_timeout_with_context(f"未读取到生意参谋指标：{label}")
+
+    def _click_sycm_metric_next_page(self) -> bool:
+        """
+        点击生意参谋指标卡片右侧翻页箭头。
+        """
+        driver = self._ensure_driver()
+        try:
+            return bool(
+                driver.execute_script(
+                    """
+                    const visible = (el) => {
+                      if (!el || el.offsetParent === null) return false;
+                      const rect = el.getBoundingClientRect();
+                      return rect.width >= 12 && rect.height >= 12 && rect.x >= 0 && rect.y >= 250 && rect.y <= 850;
+                    };
+                    const nodes = Array.from(document.querySelectorAll('button, div, span, i, svg, a'))
+                      .filter(visible)
+                      .map((el) => {
+                        const rect = el.getBoundingClientRect();
+                        const text = String(el.innerText || el.textContent || '').trim();
+                        const cls = String(el.className || '').toLowerCase();
+                        const aria = String(el.getAttribute('aria-label') || '').toLowerCase();
+                        return { el, rect, text, cls, aria };
+                      })
+                      .filter((item) => {
+                        if (item.text && !['›', '>', ''].includes(item.text)) return false;
+                        if (item.aria.includes('next') || item.aria.includes('下一')) return true;
+                        if (item.cls.includes('next') || item.cls.includes('right') || item.cls.includes('arrow')) return true;
+                        return item.rect.x >= window.innerWidth * 0.42 && item.rect.x <= window.innerWidth * 0.58 && item.rect.y >= 420;
+                      });
+                    nodes.sort((a, b) => b.rect.x - a.rect.x);
+                    if (!nodes.length) return false;
+                    const node = nodes[0].el;
+                    node.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+                    node.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+                    node.click();
+                    return true;
+                    """
+                )
+            )
+        except Exception:
+            return False
+
     def _extract_home_shop_name(self) -> str:
         """
         在首页读取当前店铺名称。
@@ -5050,6 +5783,47 @@ class WebExporter:
                         return text
                 except Exception:
                     continue
+
+        # 千牛统一顶部壳层：历史日期走【数据】页时，店铺名通常在右上角 shopName 节点。
+        try:
+            token = driver.execute_script(
+                """
+                const normalize = (value) => String(value || '').replace(/\\s+/g, ' ').trim();
+                const visible = (el) => {
+                  if (!el || el.offsetParent === null) return false;
+                  const rect = el.getBoundingClientRect();
+                  return rect.width >= 20 && rect.height >= 12
+                    && rect.y >= 0 && rect.y <= 100
+                    && rect.x >= Math.max(720, window.innerWidth * 0.48);
+                };
+                const blacklist = /^(管家|协议|下载|规则|消息|反馈|客服|财务|运营|蓝天)$/;
+                const nodes = Array.from(
+                  document.querySelectorAll(
+                    '[class*="shopName"], [class*="ShopName"], [class*="shop-name"], [class*="Shop-name"]'
+                  )
+                )
+                  .filter(visible)
+                  .map((el) => {
+                    const rect = el.getBoundingClientRect();
+                    return {
+                      text: normalize(el.innerText || el.textContent),
+                      cls: String(el.className || ''),
+                      x: rect.x,
+                      y: rect.y,
+                    };
+                  })
+                  .filter((item) => item.text.length >= 2 && item.text.length <= 36)
+                  .filter((item) => !blacklist.test(item.text))
+                  .filter((item) => !/(支付金额|支付买家数|支付子订单数|统计时间|全店数据)/.test(item.text));
+                nodes.sort((a, b) => (a.y - b.y) || (b.x - a.x));
+                return nodes.length ? nodes[0].text : '';
+                """
+            )
+            shop_name = _clean_shop_name(str(token or ""))
+            if shop_name:
+                return shop_name
+        except Exception:
+            pass
 
         # 优先使用“店铺名 + 保证金”同区域文案
         try:
@@ -6277,18 +7051,77 @@ class WebExporter:
         """
         在账户明细页面选择时间快捷项“昨天”。
         """
-        self._ensure_account_details_context()
-        report_date = DateConfig.default_report_date_str()
-        clicked = self._try_click_selector("account_details_yesterday_button") or self._click_by_text(("昨天",))
-        if not clicked:
-            if not self._set_date_range_inputs(report_date, report_date):
-                raise TimeoutException("未找到【昨天】按钮，且无法设置日期为前一天。")
-            return
+        self._select_account_details_single_day(
+            DateConfig.default_report_date_str(),
+            prefer_yesterday_shortcut=True,
+        )
 
-        # 点击“昨天”后再校验一次，不生效时直接写入日期
-        if not self._set_date_range_inputs(report_date, report_date):
-            # 不强制抛错，部分页面点击昨天后会自动生效
-            pass
+    def _select_account_details_single_day(
+        self,
+        report_date: date | datetime | str | None = None,
+        prefer_yesterday_shortcut: bool = False,
+    ) -> None:
+        """
+        在账户明细页面选择指定单日。
+        """
+        self._ensure_account_details_context()
+        target_date = self._format_report_date(report_date)
+        if prefer_yesterday_shortcut:
+            clicked = self._try_click_selector("account_details_yesterday_button") or self._click_by_text(("昨天",))
+            time.sleep(max(self.ui_poll_interval_seconds, 0.12))
+            if clicked and self._is_account_details_date_selected(target_date):
+                return
+        else:
+            clicked = False
+
+        for _ in range(4):
+            if not self._open_account_details_date_picker():
+                continue
+
+            first_clicked = self._click_calendar_day(target_date)
+            time.sleep(max(self.ui_poll_interval_seconds, 0.12))
+            second_clicked = self._click_calendar_day(target_date)
+            if not second_clicked and self._open_account_details_date_picker():
+                second_clicked = self._click_calendar_day(target_date)
+
+            self._click_blank_area()
+            time.sleep(max(self.ui_poll_interval_seconds, 0.12))
+            if first_clicked and second_clicked and self._is_account_details_date_selected(target_date):
+                return
+
+        if not clicked and not self._set_date_range_inputs(target_date, target_date):
+            raise TimeoutException(f"无法设置账户明细日期：{target_date} ~ {target_date}。")
+        self._click_blank_area()
+
+    def _open_account_details_date_picker(self) -> bool:
+        """
+        打开账户明细日期选择器，优先点击结束日期输入框以便连续锁定单日。
+        """
+        self._ensure_account_details_context()
+        driver = self._ensure_driver()
+        selectors = (
+            ".bail-range-picker .next-date-picker2 input[placeholder='结束']",
+            ".bail-range-picker .next-date-picker2 [role='button']",
+            ".bail-range-picker .next-date-picker2",
+            ".next-date-picker2 input[placeholder='结束']",
+            ".next-date-picker2 [role='button']",
+        )
+        for selector in selectors:
+            try:
+                elements = driver.find_elements(By.CSS_SELECTOR, selector)
+            except Exception:
+                continue
+            for element in elements:
+                try:
+                    if not element.is_displayed() or not element.is_enabled():
+                        continue
+                    self._click_with_retry(element)
+                    time.sleep(max(self.ui_poll_interval_seconds, 0.12))
+                    if self._visible_calendar_month_indexes():
+                        return True
+                except Exception:
+                    continue
+        return False
 
     def _click_account_details_search_button(self) -> None:
         """
@@ -6324,11 +7157,16 @@ class WebExporter:
                 """
                 const [startDate, endDate] = arguments;
                 const visibleInputs = Array.from(document.querySelectorAll('input'))
-                  .filter((el) => el.offsetParent !== null);
+                  .filter((el) => el.offsetParent !== null)
+                  .map((el) => ({ el, rect: el.getBoundingClientRect() }))
+                  .filter((item) => item.rect.width >= 40 && item.rect.height >= 14)
+                  .sort((a, b) => (a.rect.y - b.rect.y) || (a.rect.x - b.rect.x))
+                  .map((item) => item.el);
 
                 const dateLikeInputs = visibleInputs.filter((el) => {
                   const text = `${el.value || ''} ${el.placeholder || ''}`;
-                  return /\\d{4}-\\d{2}-\\d{2}/.test(text);
+                  return /\\d{4}-\\d{2}-\\d{2}/.test(text)
+                    || ['开始', '结束'].includes(String(el.placeholder || '').trim());
                 });
 
                 if (dateLikeInputs.length < 2) {
@@ -6336,17 +7174,37 @@ class WebExporter:
                 }
 
                 const target = [dateLikeInputs[0], dateLikeInputs[1]];
-                target[0].focus();
-                target[0].value = startDate;
-                target[0].dispatchEvent(new Event('input', { bubbles: true }));
-                target[0].dispatchEvent(new Event('change', { bubbles: true }));
-                target[0].blur();
+                const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+                const fireInput = (el, value) => {
+                  el.focus();
+                  if (setter) {
+                    setter.call(el, '');
+                  } else {
+                    el.value = '';
+                  }
+                  el.dispatchEvent(
+                    typeof InputEvent === 'function'
+                      ? new InputEvent('input', { bubbles: true, inputType: 'deleteContentBackward', data: null })
+                      : new Event('input', { bubbles: true })
+                  );
+                  if (setter) {
+                    setter.call(el, value);
+                  } else {
+                    el.value = value;
+                  }
+                  el.dispatchEvent(
+                    typeof InputEvent === 'function'
+                      ? new InputEvent('input', { bubbles: true, inputType: 'insertText', data: value })
+                      : new Event('input', { bubbles: true })
+                  );
+                  el.dispatchEvent(new Event('change', { bubbles: true }));
+                  el.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'Enter', code: 'Enter' }));
+                  el.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true, key: 'Enter', code: 'Enter' }));
+                  el.blur();
+                };
 
-                target[1].focus();
-                target[1].value = endDate;
-                target[1].dispatchEvent(new Event('input', { bubbles: true }));
-                target[1].dispatchEvent(new Event('change', { bubbles: true }));
-                target[1].blur();
+                fireInput(target[0], startDate);
+                fireInput(target[1], endDate);
 
                 return true;
                 """,
@@ -6356,6 +7214,16 @@ class WebExporter:
             return bool(updated)
         except Exception:
             return False
+
+    def _is_account_details_date_selected(self, report_date: str) -> bool:
+        """
+        判断账户明细筛选区日期是否已显示为指定单日。
+        """
+        target_date = self._format_report_date(report_date)
+        tokens = self._extract_account_details_date_tokens()
+        if len(tokens) < 2:
+            return False
+        return tokens[0] == target_date and tokens[1] == target_date
 
     def _extract_bill_summary_date_tokens(self) -> list[str]:
         """
@@ -6525,7 +7393,7 @@ class WebExporter:
                     rect = element.rect
                     x = float(rect.get("x", -1))
                     y = float(rect.get("y", -1))
-                    if not (220 <= x <= 980 and 180 <= y <= 920):
+                    if not (0 <= x <= 980 and 180 <= y <= 920):
                         continue
                     self._click_with_retry(element)
                     return True
@@ -6617,7 +7485,7 @@ class WebExporter:
                     rect = button.rect
                     x = float(rect.get("x", -1))
                     y = float(rect.get("y", -1))
-                    if not (220 <= x <= 980 and 180 <= y <= 920):
+                    if not (0 <= x <= 980 and 180 <= y <= 920):
                         continue
                     self._click_with_retry(button)
                     return True
@@ -7133,7 +8001,7 @@ class WebExporter:
                   if (!pattern.test(text)) continue;
                   const rect = el.getBoundingClientRect();
                   if (rect.width < 58 || rect.height < 16) continue;
-                  if (rect.x < 120 || rect.x > 980) continue;
+                  if (rect.x < 0 || rect.x > 980) continue;
                   if (rect.y < 120 || rect.y > 760) continue;
                   values.push({ text, x: rect.x, y: rect.y });
                 }
@@ -7161,7 +8029,7 @@ class WebExporter:
                     y = float(rect.get("y", -1))
                     width = float(rect.get("width", 0))
                     height = float(rect.get("height", 0))
-                    if x < 120 or x > 980 or y < 120 or y > 760:
+                    if x < 0 or x > 980 or y < 120 or y > 760:
                         continue
                     if width < 80 or height < 16:
                         continue
@@ -7268,6 +8136,54 @@ class WebExporter:
             if reasons:
                 break
         return reasons
+
+    def _collect_account_details_visible_date_cells(self, limit: int = 12) -> list[str]:
+        """
+        读取当前账户明细表格可见行的“完成时间”列日期。
+        """
+        self._ensure_account_details_context()
+        driver = self._ensure_driver()
+        row_xpaths = (
+            "//*[@id='app']/div[1]/div/div/div/div/div/div[2]/div[2]/div/div/div[3]/div[1]/div[2]/div[2]/table/tbody/tr",
+            "//*[@id='app']//table/tbody/tr",
+        )
+        date_pattern = re.compile(r"\d{4}-\d{2}-\d{2}")
+        dates: list[str] = []
+        for xpath in row_xpaths:
+            try:
+                rows = driver.find_elements(By.XPATH, xpath)
+            except Exception:
+                continue
+            for row in rows:
+                if len(dates) >= max(limit, 1):
+                    break
+                try:
+                    if not row.is_displayed():
+                        continue
+                    cells = row.find_elements(By.XPATH, "./td")
+                    if cells:
+                        text = re.sub(r"\s+", " ", (cells[0].text or cells[0].get_attribute("innerText") or "")).strip()
+                    else:
+                        text = re.sub(r"\s+", " ", (row.text or "")).strip()
+                    match = date_pattern.search(text)
+                    if match:
+                        dates.append(match.group(0))
+                except Exception:
+                    continue
+            if dates:
+                break
+        return dates
+
+    def _account_details_visible_rows_match_date(self, report_date: str) -> bool:
+        """
+        搜索后校验当前可见表格行是否都属于目标完成日期；无数据时视为可接受。
+        """
+        target_date = self._format_report_date(report_date)
+        dates = self._collect_account_details_visible_date_cells(limit=12)
+        if not dates:
+            no_data_markers = ("暂无数据", "暂无记录", "暂无结果", "没有数据", "未查询到", "共0条")
+            return any(self._page_contains_text(marker) for marker in no_data_markers)
+        return all(item == target_date for item in dates)
 
     def _account_details_visible_rows_match_reason(self, reason_text: str) -> bool:
         """
@@ -7718,10 +8634,18 @@ class WebExporter:
         if "billdirection=expense" not in current_url or "billtype=day" not in current_url:
             self._navigate_to_url(ExportConfig.BILL_SUMMARY_URL)
 
-    def _collect_home_dashboard_metrics(self) -> dict[str, Any]:
+    def _collect_home_dashboard_metrics(
+        self,
+        report_date: date | datetime | str | None = None,
+    ) -> dict[str, Any]:
         """
         提取极速版首页核心指标。
         """
+        if report_date is not None:
+            report_date_str = self._format_report_date(report_date)
+            if report_date_str != DateConfig.default_report_date_str():
+                return self._collect_qianniu_data_dashboard_metrics(report_date_str)
+
         self._navigate_to_url(self.export_url or "https://myseller.taobao.com/home.htm/QnworkbenchHome/")
         self._close_corner_popup_if_present()
         self._switch_to_speed_version_if_needed()
@@ -7744,7 +8668,10 @@ class WebExporter:
             "payment_sub_order_count": int(round(payment_sub_orders)),
         }
 
-    def _collect_trade_compensation_amount(self) -> float:
+    def _collect_trade_compensation_amount(
+        self,
+        report_date: date | datetime | str | None = None,
+    ) -> float:
         """
         在“财务 -> 对账管理 -> 账户明细”中提取交易赔付（出账）金额。
         """
@@ -7753,8 +8680,17 @@ class WebExporter:
         self._wait_account_details_filters_ready()
 
         self._log_step("账户明细筛选区已加载")
-        self._select_account_details_yesterday()
-        self._log_step("账户明细已选择日期：昨天")
+        report_date_str = self._format_report_date(report_date)
+        if report_date is None:
+            self._select_account_details_yesterday()
+        else:
+            self._select_account_details_single_day(report_date_str)
+        self._log_step(f"账户明细已选择日期：{report_date_str}")
+        if not self._is_account_details_date_selected(report_date_str):
+            self._raise_timeout_with_context(
+                f"账户明细日期筛选未生效：{report_date_str} ~ {report_date_str}",
+                selector_keys=("account_details_yesterday_button", "account_details_search_button"),
+            )
         reason_selected = self._select_account_reason_trade_compensation()
         if reason_selected:
             self._log_step("账户明细已选择原因：交易赔付")
@@ -7775,6 +8711,14 @@ class WebExporter:
         self._click_account_details_search_button()
         self._log_step("账户明细已点击搜索")
         self._wait_account_details_results_settled(previous_snapshot=previous_snapshot)
+        if not self._account_details_visible_rows_match_date(report_date_str):
+            visible_dates = self._collect_account_details_visible_date_cells(limit=8)
+            dates_preview = " | ".join(visible_dates) if visible_dates else "<未识别>"
+            self._raise_timeout_with_context(
+                f"账户明细日期搜索后结果未收敛到：{report_date_str}",
+                selector_keys=("account_details_yesterday_button", "account_details_search_button"),
+                extra_details=(f"可见结果完成时间：{dates_preview}",),
+            )
         if not self._account_details_visible_rows_match_reason("交易赔付"):
             visible_reasons = self._collect_account_details_visible_reason_cells(limit=8)
             reasons_preview = " | ".join(visible_reasons) if visible_reasons else "<未识别>"
@@ -7783,9 +8727,8 @@ class WebExporter:
                 selector_keys=("account_details_reason_dropdown", "account_details_search_button"),
                 extra_details=(f"可见结果原因：{reasons_preview}",),
             )
-        report_date = DateConfig.default_report_date_str()
         amount = self._sum_outgoing_amount_on_account_details(
-            report_date=report_date,
+            report_date=report_date_str,
             reason_text="交易赔付",
         )
         self._log_step(f"账户明细交易赔付汇总（收支金额列）：{amount}")
@@ -7794,7 +8737,10 @@ class WebExporter:
             return 0.0
         return amount
 
-    def _collect_cross_border_value_added_fee(self) -> float:
+    def _collect_cross_border_value_added_fee(
+        self,
+        report_date: date | datetime | str | None = None,
+    ) -> float:
         """
         在“财务 -> 对账管理 -> 收支账单”中提取跨境服务增值费本月付款。
         """
@@ -7804,9 +8750,9 @@ class WebExporter:
 
         self._ensure_bill_summary_expense_day()
 
-        report_date = DateConfig.default_report_date_str()
-        self._set_bill_summary_single_day(report_date)
-        self._log_step(f"收支账单已设置日期：{report_date} ~ {report_date}")
+        report_date_str = self._format_report_date(report_date)
+        self._set_bill_summary_single_day(report_date_str)
+        self._log_step(f"收支账单已设置日期：{report_date_str} ~ {report_date_str}")
         self._click_blank_area()
 
         target_business = "淘宝天猫跨境服务增值费"
@@ -7830,6 +8776,7 @@ class WebExporter:
         self,
         download_dir: Optional[Path] = None,
         login_handler: Optional[Callable[[webdriver.Chrome], None]] = None,
+        report_date: date | datetime | str | None = None,
     ) -> dict[str, Any]:
         """
         采集退款管理之外的业务/财务指标。
@@ -7844,16 +8791,16 @@ class WebExporter:
         else:
             self._ensure_wait()
 
-        home_metrics = self._collect_home_dashboard_metrics()
+        report_date_str = self._format_report_date(report_date)
+        home_metrics = self._collect_home_dashboard_metrics(report_date=report_date_str)
         _ = self._switch_to_standard_version_if_needed()
 
-        trade_compensation = self._collect_trade_compensation_amount()
-        cross_border_fee = self._collect_cross_border_value_added_fee()
+        trade_compensation = self._collect_trade_compensation_amount(report_date=report_date_str)
+        cross_border_fee = self._collect_cross_border_value_added_fee(report_date=report_date_str)
         promotion_fee = self._collect_promotion_fee()
 
-        report_date = DateConfig.default_report_date_str()
         return {
-            "report_date": report_date,
+            "report_date": report_date_str,
             "platform": "taobao",
             "shop_name": home_metrics.get("shop_name", ""),
             "payment_buyer_count": home_metrics["payment_buyer_count"],
