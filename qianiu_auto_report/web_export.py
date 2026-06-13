@@ -2523,7 +2523,7 @@ class WebExporter:
 
     def _is_promotion_report_date_target(self, report_date: str) -> bool:
         """
-        根据页面“YYYY-MM-DD 对比 ...”文案判断是否已落在目标日期（昨天）。
+        根据数据汇总顶部“YYYY-MM-DD 对比 ...”文案判断是否已落在目标日期。
         """
         target = (report_date or "").strip()
         if not target:
@@ -2538,12 +2538,20 @@ class WebExporter:
         if not normalized:
             return False
 
-        # 人群报表常见文案：2026-03-24 对比 2026-03-17
-        matches = re.findall(r"(20\d{2}-\d{2}-\d{2})\s*对比", normalized)
-        if matches and target in matches:
-            return True
+        # 只接受“对比”前的汇总日期片段，避免下方明细表中恰好出现目标日期时误判刷新完成。
+        range_matches = re.findall(
+            r"(20\d{2}-\d{2}-\d{2})\s*至\s*(20\d{2}-\d{2}-\d{2})\s*对比",
+            normalized,
+        )
+        for start_date, end_date in range_matches:
+            if start_date == target and end_date == target:
+                return True
 
-        if target in normalized and "数据汇总" in normalized and "对比" in normalized:
+        single_matches = re.findall(
+            r"(20\d{2}-\d{2}-\d{2})\s*对比",
+            normalized,
+        )
+        if single_matches and single_matches[0] == target:
             return True
         return False
 
@@ -2696,6 +2704,290 @@ class WebExporter:
             return clicked
         except Exception:
             return False
+
+    def _click_promotion_range_date_input_by_js(self, input_index: int) -> bool:
+        """
+        在人群报表日期范围弹层中点击起始/结束日期输入框。
+        """
+        driver = self._ensure_driver()
+        try:
+            element = driver.execute_script(
+                """
+                    const inputIndex = Number(arguments[0]);
+                    const normalize = (v) => String(v || '').replace(/\\s+/g, ' ').trim();
+                    const visible = (el) => {
+                      if (!el) return false;
+                      const rect = el.getBoundingClientRect();
+                      const style = getComputedStyle(el);
+                      return rect.width >= 40 && rect.height >= 16
+                        && style.display !== 'none'
+                        && style.visibility !== 'hidden'
+                        && rect.y >= -80 && rect.y <= window.innerHeight + 420;
+                    };
+                    const outputs = Array.from(document.querySelectorAll('.mx-output-open, [id^="mx_output"]'))
+                      .filter(visible)
+                      .filter((el) => normalize(el.innerText || '').includes('选择日期'));
+                    const output = outputs[0];
+                    if (!output) return null;
+                    const triggers = Array.from(output.querySelectorAll('[id^="trigger_mx_"], .mxgc-calendar-datepicker'))
+                      .filter(visible)
+                      .filter((el) => {
+                        const text = normalize(el.innerText || el.textContent || '');
+                        return /\\d{4}-\\d{2}-\\d{2}|昨日|昨天/.test(text);
+                      });
+                    const unique = [];
+                    const seen = new Set();
+                    for (const node of triggers) {
+                      const rect = node.getBoundingClientRect();
+                      const key = `${Math.round(rect.left)}:${Math.round(rect.top)}:${Math.round(rect.width)}:${Math.round(rect.height)}`;
+                      if (seen.has(key)) continue;
+                      seen.add(key);
+                      unique.push(node);
+                    }
+                    unique.sort((a, b) => {
+                      const ar = a.getBoundingClientRect();
+                      const br = b.getBoundingClientRect();
+                      return (ar.top - br.top) || (ar.left - br.left);
+                    });
+                    return unique[inputIndex] || null;
+                    """,
+                int(input_index),
+            )
+            if not element:
+                return False
+            self._click_with_retry(element)
+            return True
+        except Exception:
+            return False
+
+    def _click_promotion_calendar_day_by_js(self, report_date: str) -> bool:
+        """
+        在万相台日期面板中按完整日期属性点击目标日。
+        """
+        driver = self._ensure_driver()
+        try:
+            element = driver.execute_script(
+                """
+                    const target = String(arguments[0] || '').trim();
+                    const visible = (el) => {
+                      if (!el) return false;
+                      const rect = el.getBoundingClientRect();
+                      const style = getComputedStyle(el);
+                      return rect.width >= 8 && rect.height >= 8
+                        && style.display !== 'none'
+                        && style.visibility !== 'hidden'
+                        && rect.y >= -120 && rect.y <= window.innerHeight + 520;
+                    };
+                    const disabled = (el) => {
+                      const cls = String(el.className || '').toLowerCase();
+                      const aria = String(el.getAttribute('aria-disabled') || '').toLowerCase();
+                      return el.hasAttribute('disabled') || aria === 'true' || cls.includes('disabled');
+                    };
+                    const nodes = Array.from(document.querySelectorAll(
+                      `[title="${target}"], [aria-label*="${target}"], [data-date="${target}"]`
+                    )).filter(visible).filter((el) => !disabled(el));
+                    nodes.sort((a, b) => {
+                      const ar = a.getBoundingClientRect();
+                      const br = b.getBoundingClientRect();
+                      return (br.top - ar.top) || (br.left - ar.left);
+                    });
+                    return nodes[0] || null;
+                    """,
+                report_date,
+            )
+            if not element:
+                return False
+            self._click_with_retry(element)
+            return True
+        except Exception:
+            return False
+
+    def _extract_promotion_range_picker_dates_by_js(self) -> list[str]:
+        """
+        读取人群报表日期范围弹层中当前展示的起止日期。
+        """
+        driver = self._ensure_driver()
+        try:
+            tokens = driver.execute_script(
+                """
+                const normalize = (v) => String(v || '').replace(/\\s+/g, ' ').trim();
+                const visible = (el) => {
+                  if (!el) return false;
+                  const rect = el.getBoundingClientRect();
+                  const style = getComputedStyle(el);
+                  return rect.width >= 30 && rect.height >= 12
+                    && style.display !== 'none'
+                    && style.visibility !== 'hidden'
+                    && rect.y >= -80 && rect.y <= window.innerHeight + 420;
+                };
+                const outputs = Array.from(document.querySelectorAll('.mx-output-open, [id^="mx_output"]'))
+                  .filter(visible)
+                  .filter((el) => normalize(el.innerText || '').includes('选择日期'));
+                const output = outputs[0];
+                if (!output) return [];
+                const triggers = Array.from(output.querySelectorAll('[id^="trigger_mx_"], .mxgc-calendar-datepicker'))
+                  .filter(visible)
+                  .map((el) => {
+                    const rect = el.getBoundingClientRect();
+                    const text = normalize(el.innerText || el.textContent || '');
+                    return { text, left: rect.left, top: rect.top, width: rect.width, height: rect.height };
+                  })
+                  .filter((item) => /\\d{4}-\\d{2}-\\d{2}|昨日|昨天/.test(item.text));
+                const result = [];
+                const seen = new Set();
+                for (const item of triggers.sort((a, b) => (a.top - b.top) || (a.left - b.left))) {
+                  const key = `${Math.round(item.left)}:${Math.round(item.top)}:${Math.round(item.width)}:${Math.round(item.height)}`;
+                  if (seen.has(key)) continue;
+                  seen.add(key);
+                  const match = item.text.match(/\\d{4}-\\d{2}-\\d{2}|昨日|昨天/);
+                  if (match) result.push(match[0]);
+                  if (result.length >= 2) break;
+                }
+                return result;
+                """
+            )
+        except Exception:
+            return []
+        if not isinstance(tokens, list):
+            return []
+        return [str(item).strip() for item in tokens if str(item).strip()]
+
+    def _confirm_promotion_range_picker_by_js(self) -> bool:
+        """
+        点击人群报表日期范围弹层的【确定】。
+        """
+        driver = self._ensure_driver()
+        try:
+            return bool(
+                driver.execute_script(
+                    """
+                    const normalize = (v) => String(v || '').replace(/\\s+/g, ' ').trim();
+                    const visible = (el) => {
+                      if (!el) return false;
+                      const rect = el.getBoundingClientRect();
+                      const style = getComputedStyle(el);
+                      return rect.width >= 20 && rect.height >= 12
+                        && style.display !== 'none'
+                        && style.visibility !== 'hidden'
+                        && rect.y >= -80 && rect.y <= window.innerHeight + 420;
+                    };
+                    const clickNode = (node) => {
+                      if (!node) return false;
+                      const rect = node.getBoundingClientRect();
+                      const x = Math.max(1, Math.min(window.innerWidth - 1, rect.left + rect.width / 2));
+                      const y = Math.max(1, Math.min(window.innerHeight - 1, rect.top + rect.height / 2));
+                      for (const type of ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click']) {
+                        node.dispatchEvent(new MouseEvent(type, {
+                          bubbles: true,
+                          cancelable: true,
+                          clientX: x,
+                          clientY: y,
+                          view: window,
+                        }));
+                      }
+                      return true;
+                    };
+                    const outputs = Array.from(document.querySelectorAll('.mx-output-open, [id^="mx_output"]'))
+                      .filter(visible)
+                      .filter((el) => normalize(el.innerText || '').includes('选择日期'));
+                    const output = outputs[0];
+                    if (!output) return false;
+                    const buttons = Array.from(output.querySelectorAll('button, span, div'))
+                      .filter(visible)
+                      .filter((el) => normalize(el.innerText || el.textContent || '') === '确定');
+                    buttons.sort((a, b) => {
+                      const ar = a.getBoundingClientRect();
+                      const br = b.getBoundingClientRect();
+                      return (ar.top - br.top) || (ar.left - br.left);
+                    });
+                    return clickNode(buttons[0]);
+                    """
+                )
+            )
+        except Exception:
+            return False
+
+    def _set_promotion_report_date(self, report_date: date | datetime | str | None = None) -> None:
+        """
+        设置人群报表数据汇总周期为指定单日。
+        """
+        target = self._format_report_date(report_date)
+        current_period_text = self._get_promotion_period_display_text()
+        self._log_step(f"人群报表当前数据汇总周期控件值：{current_period_text or '<未识别>'}")
+
+        if self._is_promotion_report_date_target(target) and target in current_period_text:
+            self._log_step(f"人群报表已选择数据汇总周期：{target}")
+            return
+
+        for _ in range(4):
+            opened = (
+                self._click_visible_xpath_candidates(
+                    (
+                        "//*[@id='trigger_mx_2510']",
+                        "//*[@id='trigger_mx_2510']/div/span",
+                        "//*[@id='trigger_mx_8342']",
+                        "//*[@id='trigger_mx_8342']/div/span",
+                        "//*[normalize-space()='数据汇总周期']/following::*[starts-with(@id,'trigger_mx_')][1]",
+                        "//*[contains(normalize-space(),'数据汇总周期')]/following::*[starts-with(@id,'trigger_mx_')][1]",
+                    )
+                )
+                or self._click_promotion_period_control_by_js()
+                or self._try_click_selector("promotion_summary_period_control")
+            )
+            if not opened:
+                self._promotion_pause(0.5)
+                continue
+            self._promotion_pause(0.5)
+
+            selected_all = True
+            for input_index in (0, 1):
+                if not self._click_promotion_range_date_input_by_js(input_index):
+                    selected_all = False
+                    break
+                self._promotion_pause(0.25)
+                if not self._click_promotion_calendar_day_by_js(target):
+                    selected_all = False
+                    break
+                self._promotion_pause(0.45)
+
+            tokens = self._extract_promotion_range_picker_dates_by_js()
+            if not selected_all or len(tokens) < 2 or tokens[0] != target or tokens[1] != target:
+                self._log_step(
+                    "人群报表日期弹层未锁定目标日期，重试："
+                    f"目标={target}，当前={tokens or '<未识别>'}"
+                )
+                self._click_blank_area()
+                self._promotion_pause(0.5)
+                continue
+
+            if not self._confirm_promotion_range_picker_by_js():
+                self._click_blank_area()
+                self._promotion_pause(0.5)
+                continue
+
+            self._promotion_pause(1.2)
+            try:
+                self._wait_until(
+                    lambda: self._is_promotion_report_date_target(target),
+                    timeout_seconds=max(self.timeout_seconds, 10),
+                    message=f"人群报表日期未切换到：{target}",
+                    selector_keys=("promotion_summary_period_control",),
+                )
+            except TimeoutException:
+                self._log_step(f"人群报表确认日期后未观测到数据刷新到：{target}，重试")
+                continue
+
+            self._log_step(f"人群报表已选择数据汇总周期：{target}")
+            return
+
+        if self._is_promotion_report_date_target(target):
+            self._log_step(f"周期控件未稳定识别，但页面日期已是 {target}，继续后续读取")
+            return
+
+        self._raise_timeout_with_context(
+            f"未能将人群报表数据汇总周期切换到：{target}",
+            selector_keys=("promotion_summary_period_control",),
+        )
 
     def _set_promotion_period_yesterday(self) -> None:
         """
@@ -2857,9 +3149,9 @@ class WebExporter:
 
         self._raise_timeout_with_context("未读取到【数据汇总 -> 花费（元）】。")
 
-    def _collect_promotion_fee(self) -> float:
+    def _collect_promotion_fee(self, report_date: date | datetime | str | None = None) -> float:
         """
-        采集推广费用：推广 -> 万相台ai无界 -> 报表 -> 人群报表 -> 周期昨天 -> 花费（元）。
+        采集推广费用：推广 -> 万相台ai无界 -> 报表 -> 人群报表 -> 指定日期 -> 花费（元）。
         """
         try:
             self._open_promotion_then_wanxiangtai_page()
@@ -2877,7 +3169,8 @@ class WebExporter:
             self._log_step("万相台无界暂无权限，推广费用按 0.00 处理")
             return 0.0
 
-        self._set_promotion_period_yesterday()
+        report_date_str = self._format_report_date(report_date)
+        self._set_promotion_report_date(report_date_str)
         time.sleep(max(self.interaction_delay_seconds * 2.5, 0.3))
         fee = self._extract_promotion_spend_fee()
         self._log_step(f"人群报表推广费用（花费）：{fee}")
@@ -5698,6 +5991,8 @@ class WebExporter:
             raw_text = str(raw_value or "").strip()
             if not raw_text:
                 return ""
+            raw_text = re.sub(r"\s*(?:ID|Id|id)\s*[:：].*$", "", raw_text).strip()
+            raw_text = re.sub(r"([^\s:：]{2,36}(?:旗舰店|专卖店|专营店|官方店|店铺|店))\s*[:：].*$", r"\1", raw_text).strip()
 
             # 优先按可视行拆分，取第一条“像店铺名”的行
             lines = [line.strip() for line in re.split(r"[\r\n]+", raw_text) if line.strip()]
@@ -8530,6 +8825,77 @@ class WebExporter:
         self._log_step(f"未稳定读取到业务小类【{business_name}】本月付款，按 0.00 处理")
         return 0.0
 
+    def _snapshot_bill_summary_rows(self) -> str:
+        """
+        记录当前收支账单结果区前几行文本，用于等待搜索刷新。
+        """
+        driver = self._ensure_driver()
+        try:
+            texts = driver.execute_script(
+                """
+                const normalize = (v) => String(v || '').replace(/\\s+/g, ' ').trim();
+                const visible = (el) => {
+                  if (!el || el.offsetParent === null) return false;
+                  const rect = el.getBoundingClientRect();
+                  return rect.width >= 120 && rect.height >= 16 && rect.x >= 80 && rect.x <= 1320 && rect.y >= 120 && rect.y <= 980;
+                };
+                const rows = Array.from(document.querySelectorAll('tr, [role="row"], div, li'))
+                  .filter(visible)
+                  .map((el) => normalize(el.innerText || el.textContent || ''))
+                  .filter(Boolean)
+                  .filter((text) => {
+                    if (text.length < 8 || text.length > 520) return false;
+                    if (text.includes('业务大类') && text.includes('本月付款')) return false;
+                    return /CNY|本月付款|淘宝天猫跨境服务增值费|暂无数据|暂无记录|没有数据|未查询到/.test(text);
+                  });
+                return Array.from(new Set(rows)).slice(0, 8);
+                """
+            )
+        except Exception:
+            return ""
+        if not isinstance(texts, list):
+            return ""
+        return "\n".join(str(item).strip()[:260] for item in texts if str(item).strip())
+
+    def _wait_bill_summary_results_settled(self, previous_snapshot: Optional[str] = None) -> None:
+        """
+        点击搜索后等待收支账单结果区刷新/稳定，避免读取旧结果。
+        """
+        start_time = time.time()
+        timeout_seconds = max(self.timeout_seconds, 10)
+        last_snapshot = previous_snapshot or ""
+        no_data_markers = ("暂无数据", "暂无记录", "暂无结果", "没有数据", "未查询到", "共0条")
+        while time.time() - start_time < timeout_seconds:
+            current_snapshot = self._snapshot_bill_summary_rows()
+            if current_snapshot and (not last_snapshot or current_snapshot != last_snapshot):
+                time.sleep(max(self.ui_poll_interval_seconds, 0.18))
+                return
+            if any(self._page_contains_text(marker) for marker in no_data_markers):
+                time.sleep(max(self.ui_poll_interval_seconds, 0.18))
+                return
+            time.sleep(max(self.ui_poll_interval_seconds, 0.18))
+
+        self._log_step("收支账单搜索后结果区未观察到明显变化，继续用当前页面校验读取")
+
+    def _bill_summary_visible_rows_match_business(self, business_name: str) -> bool:
+        """
+        搜索后校验当前可见结果是否已收敛到目标业务；无数据时视为可接受。
+        """
+        target = str(business_name or "").strip()
+        if not target:
+            return False
+        snapshot = self._snapshot_bill_summary_rows()
+        no_data_markers = ("暂无数据", "暂无记录", "暂无结果", "没有数据", "未查询到", "共0条")
+        if not snapshot:
+            return any(self._page_contains_text(marker) for marker in no_data_markers)
+        if any(marker in snapshot for marker in no_data_markers):
+            return True
+        row_texts = [line for line in snapshot.splitlines() if line.strip()]
+        if not row_texts:
+            return False
+        business_rows = [line for line in row_texts if target in line]
+        return bool(business_rows)
+
     def _extract_bill_summary_fee_total(self) -> float:
         """
         读取收支账单页面“扣费金额合计”数值（去除 ¥/￥ 符号）。
@@ -8765,9 +9131,16 @@ class WebExporter:
                 selector_keys=("bill_summary_business_dropdown_control", "bill_summary_business_cross_border_option"),
             )
 
+        previous_snapshot = self._snapshot_bill_summary_rows()
         self._click_search_button()
         self._log_step("收支账单已点击搜索")
-        time.sleep(max(self.interaction_delay_seconds * 3.0, 0.2))
+        self._wait_bill_summary_results_settled(previous_snapshot=previous_snapshot)
+        if not self._bill_summary_visible_rows_match_business(target_business):
+            self._raise_timeout_with_context(
+                f"收支账单搜索后结果未收敛到业务：{target_business}",
+                selector_keys=("bill_summary_business_dropdown_control",),
+                extra_details=(f"可见结果：{self._snapshot_bill_summary_rows() or '<未识别>'}",),
+            )
         fee_total = self._extract_cross_border_monthly_payment(target_business)
         self._log_step(f"收支账单淘宝天猫跨境服务增值费本月付款：{fee_total}")
         return fee_total
@@ -8797,7 +9170,7 @@ class WebExporter:
 
         trade_compensation = self._collect_trade_compensation_amount(report_date=report_date_str)
         cross_border_fee = self._collect_cross_border_value_added_fee(report_date=report_date_str)
-        promotion_fee = self._collect_promotion_fee()
+        promotion_fee = self._collect_promotion_fee(report_date=report_date_str)
 
         return {
             "report_date": report_date_str,

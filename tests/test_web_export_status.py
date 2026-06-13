@@ -413,6 +413,27 @@ def test_extract_home_shop_name_uses_qianniu_shell_shop_name_without_store_suffi
     assert exporter._extract_home_shop_name() == "好梦轻奢裙裤"
 
 
+def test_extract_home_shop_name_cleans_qianniu_shell_account_suffix() -> None:
+    """
+    千牛顶部店铺名粘连旺旺名和 ID 时，应只保留真实店铺名。
+    """
+    exporter = WebExporter()
+
+    class _Driver:
+        def find_elements(self, _by: str, _value: str) -> list[_FakeElement]:
+            return []
+
+        def execute_script(self, script: str) -> str:
+            if "shopName" in script:
+                return "vullvan瑜妍旗舰店:蓝天 ID：125080356"
+            return ""
+
+    exporter.driver = _Driver()  # type: ignore[assignment]
+    exporter._page_text_snippet = lambda max_length=10000: "全店数据 支付金额 525.00"  # type: ignore[method-assign]
+
+    assert exporter._extract_home_shop_name() == "vullvan瑜妍旗舰店"
+
+
 def test_bill_summary_business_category_prefers_business_category_before_subcategory() -> None:
     """
     收支账单跨境服务费应优先选择“业务大类”，再兼容旧页面“业务小类”。
@@ -539,7 +560,10 @@ def test_collect_cross_border_value_added_fee_reads_target_business_row_not_page
     exporter._click_blank_area = lambda: calls.append("blank")  # type: ignore[method-assign]
     exporter._set_bill_summary_business_category = lambda business_name: "业务大类"  # type: ignore[method-assign]
     exporter._is_bill_summary_business_selected = lambda business_name, filter_label=None: True  # type: ignore[method-assign]
+    exporter._snapshot_bill_summary_rows = lambda: "before rows"  # type: ignore[attr-defined]
     exporter._click_search_button = lambda: calls.append("search")  # type: ignore[method-assign]
+    exporter._wait_bill_summary_results_settled = lambda previous_snapshot=None: calls.append(f"wait_results:{previous_snapshot}")  # type: ignore[attr-defined]
+    exporter._bill_summary_visible_rows_match_business = lambda business_name: True  # type: ignore[attr-defined]
     exporter._extract_cross_border_monthly_payment = lambda business_name: 82.3  # type: ignore[method-assign]
     exporter._extract_bill_summary_fee_total = lambda: 999.0  # type: ignore[method-assign]
     exporter._log_step = lambda message: calls.append(f"log:{message}")  # type: ignore[method-assign]
@@ -549,6 +573,8 @@ def test_collect_cross_border_value_added_fee_reads_target_business_row_not_page
 
     assert result == 82.3
     assert "search" in calls
+    assert "wait_results:before rows" in calls
+    assert calls.index("search") < calls.index("wait_results:before rows")
     assert any("淘宝天猫跨境服务增值费本月付款：82.3" in item for item in calls)
     assert not any("扣费金额合计" in item for item in calls)
 
@@ -969,7 +995,10 @@ def test_collect_cross_border_value_added_fee_does_not_fallback_to_page_total_af
     exporter._click_blank_area = lambda: calls.append("blank")  # type: ignore[method-assign]
     exporter._set_bill_summary_business_category = lambda business_name: "业务大类"  # type: ignore[method-assign]
     exporter._is_bill_summary_business_selected = lambda business_name, filter_label=None: True  # type: ignore[method-assign]
+    exporter._snapshot_bill_summary_rows = lambda: "before rows"  # type: ignore[attr-defined]
     exporter._click_search_button = lambda: calls.append("search")  # type: ignore[method-assign]
+    exporter._wait_bill_summary_results_settled = lambda previous_snapshot=None: calls.append(f"wait_results:{previous_snapshot}")  # type: ignore[attr-defined]
+    exporter._bill_summary_visible_rows_match_business = lambda business_name: True  # type: ignore[attr-defined]
     exporter._extract_cross_border_monthly_payment = lambda business_name: 0.0  # type: ignore[method-assign]
     exporter._extract_bill_summary_fee_total = lambda: 1584.68  # type: ignore[method-assign]
     exporter._log_step = lambda message: calls.append(f"log:{message}")  # type: ignore[method-assign]
@@ -1382,6 +1411,86 @@ def test_collect_promotion_fee_defaults_zero_when_wanxiangtai_entry_missing() ->
 
     assert exporter._collect_promotion_fee() == 0.0
     assert any("未找到万相台ai无界入口" in item for item in logs)
+
+
+def test_promotion_report_date_target_requires_summary_comparison_date() -> None:
+    """
+    推广日期生效判断只能看数据汇总对比日期，不能被下方明细表里的目标日期误导。
+    """
+    exporter = WebExporter()
+
+    class Driver:
+        def __init__(self, text: str) -> None:
+            self.text = text
+
+        def find_element(self, by: str, value: str) -> _FakeElement:
+            assert by == By.TAG_NAME and value == "body"
+            return _FakeElement(text=self.text)
+
+    exporter.driver = Driver(
+        "数据汇总 2026-06-05至2026-06-11对比2026-05-29至2026-06-04 "
+        "人群数据明细 数据范围为：2026-06-05至2026-06-11 日期 2026-06-07 花费 123"
+    )  # type: ignore[assignment]
+    assert exporter._is_promotion_report_date_target("2026-06-07") is False
+
+    exporter.driver = Driver(
+        "数据汇总 周期对比 2026-06-07对比2026-05-31 花费(元) 1,234.56 "
+        "人群数据明细 数据范围为：2026-06-07"
+    )  # type: ignore[assignment]
+    assert exporter._is_promotion_report_date_target("2026-06-07") is True
+
+
+def test_collect_promotion_fee_uses_explicit_report_date(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    推广费用应按用户选择的报表日期筛选，而不是始终选择昨天。
+    """
+    exporter = WebExporter()
+    calls: list[object] = []
+
+    monkeypatch.setattr("qianiu_auto_report.web_export.time.sleep", lambda _seconds: None)
+    exporter._open_promotion_then_wanxiangtai_page = lambda: calls.append("open_wxt")  # type: ignore[method-assign]
+    exporter._open_promotion_report_page = lambda: calls.append("open_report")  # type: ignore[method-assign]
+    exporter._is_promotion_unavailable_page = lambda: False  # type: ignore[method-assign]
+    exporter._set_promotion_report_date = lambda report_date: calls.append(("set_date", report_date))  # type: ignore[attr-defined]
+    exporter._extract_promotion_spend_fee = lambda: calls.append("extract") or 66.7  # type: ignore[method-assign]
+    exporter._log_step = lambda message: calls.append(("log", message))  # type: ignore[method-assign]
+    exporter.interaction_delay_seconds = 0.0
+
+    assert exporter._collect_promotion_fee(report_date=date(2026, 6, 7)) == 66.7
+    assert ("set_date", "2026-06-07") in calls
+    assert calls.index(("set_date", "2026-06-07")) < calls.index("extract")
+
+
+def test_collect_business_finance_metrics_passes_report_date_to_promotion() -> None:
+    """
+    淘宝整店采集应把报表日期继续传递给推广费用采集。
+    """
+    exporter = WebExporter()
+    exporter.driver = object()  # type: ignore[assignment]
+    calls: list[object] = []
+
+    exporter.validate_runtime_config = lambda: None  # type: ignore[method-assign]
+    exporter._ensure_wait = lambda: None  # type: ignore[method-assign]
+    exporter._collect_home_dashboard_metrics = lambda report_date=None: calls.append(("home", report_date)) or {  # type: ignore[method-assign]
+        "shop_name": "测试店铺",
+        "payment_buyer_count": 3,
+        "payment_amount": 188.0,
+        "payment_sub_order_count": 4,
+    }
+    exporter._switch_to_standard_version_if_needed = lambda: calls.append("switch_standard")  # type: ignore[method-assign]
+    exporter._collect_trade_compensation_amount = lambda report_date=None: calls.append(("trade", report_date)) or 1.2  # type: ignore[method-assign]
+    exporter._collect_cross_border_value_added_fee = lambda report_date=None: calls.append(("cross", report_date)) or 3.4  # type: ignore[method-assign]
+    exporter._collect_promotion_fee = lambda report_date=None: calls.append(("promotion", report_date)) or 5.6  # type: ignore[method-assign]
+
+    metrics = exporter.collect_business_finance_metrics(report_date="2026-06-07")
+
+    assert ("home", "2026-06-07") in calls
+    assert ("trade", "2026-06-07") in calls
+    assert ("cross", "2026-06-07") in calls
+    assert ("promotion", "2026-06-07") in calls
+    assert metrics["promotion_fee"] == 5.6
 
 
 def test_build_douyin_metrics_maps_compass_values_to_report_fields() -> None:
