@@ -198,6 +198,38 @@ def test_collect_platform_metrics_uses_douyin_flow() -> None:
     assert exporter.calls == [("douyin", target_dir)]
 
 
+def test_collect_platform_metrics_passes_report_date_to_douyin_flow() -> None:
+    """
+    抖音罗盘指标采集应接收用户选择的报表日期。
+    """
+
+    class _FakeExporter:
+        def __init__(self) -> None:
+            self.calls: list[tuple[Path, date]] = []
+
+        def collect_douyin_compass_metrics(
+            self,
+            download_dir: Path,
+            report_date: date,
+        ) -> dict[str, object]:
+            self.calls.append((download_dir, report_date))
+            return {"report_date": report_date.isoformat()}
+
+    exporter = _FakeExporter()
+    target_date = date(2026, 6, 15)
+    target_dir = Path("/tmp/douyin")
+
+    result = collect_platform_metrics(
+        exporter,
+        "douyin",
+        target_dir,
+        report_date=target_date,
+    )
+
+    assert result == {"report_date": "2026-06-15", "platform": "douyin"}
+    assert exporter.calls == [(target_dir, target_date)]
+
+
 def test_process_data_passes_explicit_report_date() -> None:
     """
     主流程数据处理包装应把用户选择的报表日期传给 DataProcessor。
@@ -259,6 +291,38 @@ def test_collect_platform_metrics_batch_uses_douyin_all_shop_flow() -> None:
     assert [item["shop_name"] for item in result] == ["高品质裙裤", "咚咚源头女装", "高品专业女裤"]
     assert all(item["platform"] == "douyin" for item in result)
     assert exporter.calls == [("douyin_all", target_dir)]
+
+
+def test_collect_platform_metrics_batch_passes_report_date_to_douyin_all_shop_flow() -> None:
+    """
+    批量采集抖音店铺时，也应把 GUI 选择的报表日期传给抖音采集入口。
+    """
+
+    class _FakeExporter:
+        def __init__(self) -> None:
+            self.calls: list[tuple[Path, date]] = []
+
+        def collect_douyin_all_shop_metrics(
+            self,
+            download_dir: Path,
+            report_date: date,
+        ) -> list[dict[str, object]]:
+            self.calls.append((download_dir, report_date))
+            return [{"shop_name": "高品质裙裤", "report_date": report_date.isoformat()}]
+
+    exporter = _FakeExporter()
+    target_date = date(2026, 6, 15)
+    target_dir = Path("/tmp/douyin")
+
+    result = collect_platform_metrics_batch(
+        exporter,
+        "douyin",
+        target_dir,
+        report_date=target_date,
+    )
+
+    assert result == [{"shop_name": "高品质裙裤", "report_date": "2026-06-15", "platform": "douyin"}]
+    assert exporter.calls == [(target_dir, target_date)]
 
 
 def test_write_business_finance_reports_writes_each_metric_row(tmp_path: Path) -> None:

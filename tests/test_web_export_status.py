@@ -1555,6 +1555,15 @@ def test_extract_douyin_metric_prefers_value_immediately_after_label() -> None:
     assert WebExporter._extract_metric_value_after_label_from_text(text, "支出金额") == 1745.05
 
 
+def test_extract_douyin_metric_parses_decimal_when_dot_is_split_by_spaces() -> None:
+    """
+    抖店罗盘会把金额小数点拆成独立文本节点，页面文本变成“4,669 . 75”。
+    """
+    text = "收支概况 支出金额 ¥ 4,669 . 75 31.52% 投放消耗（店铺被投） ¥51.1"
+
+    assert WebExporter._extract_metric_value_after_label_from_text(text, "支出金额") == 4669.75
+
+
 def test_extract_douyin_compass_metric_treats_placeholder_as_zero_before_script_fallback() -> None:
     """
     支出金额为占位符时，不能误取后续“投放消耗（店铺被投）”金额。
@@ -1588,7 +1597,7 @@ def test_collect_douyin_compass_metrics_reads_three_core_values() -> None:
     exporter._set_douyin_period_last_1day = lambda: calls.append("set_1day")  # type: ignore[method-assign]
     exporter._promotion_pause = lambda scale=1.0: None  # type: ignore[method-assign]
     exporter._extract_douyin_shop_name = lambda: "抖店A"  # type: ignore[method-assign]
-    exporter._collect_douyin_after_sale_refund_summary = lambda download_dir: calls.append("after_sale_refund") or {  # type: ignore[method-assign]
+    exporter._collect_douyin_after_sale_refund_summary = lambda download_dir, report_date=None: calls.append(f"after_sale_refund:{report_date}") or {  # type: ignore[method-assign]
         "douyin_refund_metrics": {"refund_total_order_count": 9}
     }
 
@@ -1607,7 +1616,7 @@ def test_collect_douyin_compass_metrics_reads_three_core_values() -> None:
         "metric:成交金额",
         "metric:成交订单数",
         "metric:支出金额",
-        "after_sale_refund",
+        "after_sale_refund:None",
     ]
     assert metrics["shop_name"] == "抖店A"
     assert metrics["payment_amount"] == 4567.89
@@ -1615,6 +1624,124 @@ def test_collect_douyin_compass_metrics_reads_three_core_values() -> None:
     assert metrics["payment_buyer_count"] == 123
     assert metrics["promotion_fee"] == 456.7
     assert metrics["refund_summary"]["douyin_refund_metrics"]["refund_total_order_count"] == 9
+
+
+def test_collect_douyin_compass_metrics_uses_custom_date_for_non_default_report_date(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    指定非默认日期时，抖店罗盘应通过自定义日期选择目标单日，而不是继续点“近1天”。
+    """
+    exporter = WebExporter()
+    calls: list[str] = []
+
+    exporter.driver = object()  # type: ignore[assignment]
+    exporter.validate_runtime_config = lambda: None  # type: ignore[method-assign]
+    exporter._ensure_wait = lambda: object()  # type: ignore[method-assign]
+    exporter._close_douyin_notice_popup_if_present = lambda: False  # type: ignore[method-assign]
+    exporter._open_douyin_compass_page = lambda: calls.append("open_compass")  # type: ignore[method-assign]
+    exporter._set_douyin_period_last_1day = lambda: calls.append("set_1day")  # type: ignore[method-assign]
+    exporter._set_douyin_compass_report_date = lambda report_date: calls.append(f"set_date:{report_date}")  # type: ignore[method-assign]
+    exporter._promotion_pause = lambda scale=1.0: None  # type: ignore[method-assign]
+    exporter._extract_douyin_shop_name = lambda: "抖店A"  # type: ignore[method-assign]
+    exporter._collect_douyin_after_sale_refund_summary = lambda download_dir, report_date=None: calls.append(f"after_sale_refund:{report_date}") or {  # type: ignore[method-assign]
+        "douyin_refund_metrics": {"refund_total_order_count": 9}
+    }
+    exporter._extract_douyin_compass_metric = lambda label: {  # type: ignore[method-assign]
+        "成交金额": 90627.0,
+        "成交订单数": 699.0,
+        "支出金额": 3681.65,
+    }[label]
+    monkeypatch.setattr(
+        "qianiu_auto_report.web_export.DateConfig.default_report_date_str",
+        lambda: "2026-06-16",
+    )
+
+    metrics = exporter.collect_douyin_compass_metrics(
+        download_dir=None,
+        report_date=date(2026, 6, 15),
+    )
+
+    assert "set_1day" not in calls
+    assert calls[:2] == ["open_compass", "set_date:2026-06-15"]
+    assert "after_sale_refund:2026-06-15" in calls
+    assert metrics["report_date"] == "2026-06-15"
+    assert metrics["payment_amount"] == 90627.0
+
+
+def test_collect_douyin_all_shop_metrics_passes_report_date_to_each_shop() -> None:
+    """
+    多店铺采集时，每个店铺的罗盘读取都应使用同一个目标报表日期。
+    """
+    exporter = WebExporter()
+    shops = ["高品质裙裤", "咚咚源头女装"]
+    state = {"active_index": 0}
+    calls: list[tuple[str, object]] = []
+
+    def _fake_collect(
+        download_dir=None,
+        login_handler=None,
+        switch_to_existing_page=True,
+        report_date=None,
+    ):
+        shop_name = shops[state["active_index"]]
+        calls.append(("collect", (shop_name, switch_to_existing_page, report_date)))
+        return {"shop_name": shop_name, "platform": "douyin"}
+
+    def _fake_switch(visited_shop_names):
+        calls.append(("switch", tuple(visited_shop_names)))
+        state["active_index"] += 1
+        if state["active_index"] < len(shops):
+            return shops[state["active_index"]]
+        return ""
+
+    exporter.collect_douyin_compass_metrics = _fake_collect  # type: ignore[method-assign]
+    exporter._switch_to_next_unvisited_douyin_shop = _fake_switch  # type: ignore[attr-defined]
+    exporter._get_current_douyin_home_shop_name = lambda: ""  # type: ignore[attr-defined]
+
+    metrics_list = exporter.collect_douyin_all_shop_metrics(
+        download_dir=None,
+        report_date=date(2026, 6, 15),
+    )
+
+    assert [metrics["shop_name"] for metrics in metrics_list] == shops
+    assert calls == [
+        ("collect", ("高品质裙裤", True, date(2026, 6, 15))),
+        ("switch", ("高品质裙裤",)),
+        ("collect", ("咚咚源头女装", False, date(2026, 6, 15))),
+        ("switch", ("高品质裙裤", "咚咚源头女装")),
+    ]
+
+
+def test_set_douyin_compass_report_date_accepts_metric_refresh_when_axis_text_is_unreadable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    罗盘图表横轴可能由 canvas 绘制而无法从 DOM 读取；此时面板关闭且核心指标刷新即可继续。
+    """
+    exporter = WebExporter()
+    calls: list[str] = []
+    state = {"signature": (97975.0, 754.0, 4050.19), "picker_open": True}
+
+    monkeypatch.setattr(
+        "qianiu_auto_report.web_export.DateConfig.default_report_date_str",
+        lambda: "2026-06-16",
+    )
+    exporter._is_douyin_compass_report_date_selected = lambda report_date: False  # type: ignore[method-assign]
+    exporter._douyin_compass_metric_signature = lambda: state["signature"]  # type: ignore[method-assign]
+    exporter._open_douyin_compass_custom_date_picker = lambda: calls.append("open_picker") or True  # type: ignore[method-assign]
+    exporter._is_douyin_compass_custom_date_picker_open = lambda: state["picker_open"]  # type: ignore[method-assign]
+    exporter._click_douyin_compass_calendar_day_twice = lambda report_date: calls.append(f"click:{report_date}") or state.update(  # type: ignore[method-assign]
+        {"signature": (90627.0, 699.0, 3681.65), "picker_open": False}
+    ) or True
+    exporter._wait_until = lambda *args, **kwargs: (_ for _ in ()).throw(TimeoutException("axis unreadable"))  # type: ignore[method-assign]
+    exporter._log_step = lambda message: calls.append(message)  # type: ignore[method-assign]
+
+    exporter._set_douyin_compass_report_date("2026-06-15")
+
+    assert calls[:2] == ["open_picker", "click:2026-06-15"]
+    assert "图表日期文本未能自动读取" in calls[-2]
+    assert calls[-1] == "电商罗盘已选择日期：2026-06-15"
 
 
 def test_after_sale_workbench_page_readiness_requires_export_action() -> None:
@@ -1630,6 +1757,22 @@ def test_after_sale_workbench_page_readiness_requires_export_action() -> None:
     exporter._page_contains_text = lambda text: text in marker_hits  # type: ignore[method-assign]
 
     assert exporter._is_douyin_after_sale_workbench_page_by_content() is False
+
+
+def test_after_sale_workbench_page_readiness_accepts_spaced_query_text() -> None:
+    """
+    真实售后工作台可能把“查询”渲染成“查 询”，仍应视为筛选区已就绪。
+    """
+    exporter = WebExporter()
+    exporter.get_current_url = (
+        lambda: "https://fxg.jinritemai.com/ffa/merchant-aftersale-workbench/aftersale/list"
+    )  # type: ignore[method-assign]
+    exporter._has_douyin_after_sale_filter_controls = lambda: True  # type: ignore[method-assign]
+    exporter._page_text_snippet = lambda max_length=6000: (  # type: ignore[method-assign]
+        "售后状态 全部 售后类型 全部 完结时间 请选择 查 询 重 置 导出 收起"
+    )
+
+    assert exporter._is_douyin_after_sale_workbench_page_by_content() is True
 
 
 def test_select_douyin_after_sale_date_field_uses_compact_date_control() -> None:
@@ -1656,6 +1799,102 @@ def test_select_douyin_after_sale_date_shortcut_uses_right_side_quick_select() -
 
     assert exporter._select_douyin_after_sale_date_shortcut("昨日") is True
     assert clicks == ["date-shortcut", "yesterday-option"]
+
+
+def test_set_douyin_after_sale_export_conditions_uses_yesterday_shortcut_for_default_date(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    报表日期为默认昨天时，售后工作台应继续使用右侧快捷框选择“昨日”。
+    """
+    exporter = WebExporter()
+    calls: list[tuple[str, object]] = []
+
+    monkeypatch.setattr(
+        "qianiu_auto_report.web_export.DateConfig.default_report_date_str",
+        lambda: "2026-06-16",
+    )
+    exporter._select_douyin_after_sale_field_option = lambda field, option: calls.append(("field", (field, option))) or True  # type: ignore[method-assign]
+    exporter._click_douyin_after_sale_more_filters = lambda: calls.append(("more", "")) or True  # type: ignore[method-assign]
+    exporter._select_douyin_after_sale_date_field_option = lambda option: calls.append(("date_field", option)) or True  # type: ignore[method-assign]
+    exporter._select_douyin_after_sale_date_shortcut = lambda option: calls.append(("shortcut", option)) or True  # type: ignore[method-assign]
+    exporter._set_douyin_after_sale_custom_single_day = lambda report_date: calls.append(("custom", report_date)) or True  # type: ignore[method-assign]
+    exporter._log_step = lambda message: calls.append(("log", message))  # type: ignore[method-assign]
+
+    exporter._set_douyin_after_sale_export_conditions(report_date="2026-06-16")
+
+    assert ("date_field", "完结时间") in calls
+    assert ("shortcut", "昨日") in calls
+    assert not any(call[0] == "custom" for call in calls)
+
+
+def test_set_douyin_after_sale_export_conditions_uses_custom_day_for_non_default_date(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    报表日期不是昨天时，售后工作台应点击开始日期并选择目标单日，不再选择右侧“请选择/昨日”。
+    """
+    exporter = WebExporter()
+    calls: list[tuple[str, object]] = []
+
+    monkeypatch.setattr(
+        "qianiu_auto_report.web_export.DateConfig.default_report_date_str",
+        lambda: "2026-06-16",
+    )
+    exporter._select_douyin_after_sale_field_option = lambda field, option: calls.append(("field", (field, option))) or True  # type: ignore[method-assign]
+    exporter._click_douyin_after_sale_more_filters = lambda: calls.append(("more", "")) or True  # type: ignore[method-assign]
+    exporter._select_douyin_after_sale_date_field_option = lambda option: calls.append(("date_field", option)) or True  # type: ignore[method-assign]
+    exporter._select_douyin_after_sale_date_shortcut = lambda option: calls.append(("shortcut", option)) or True  # type: ignore[method-assign]
+    exporter._set_douyin_after_sale_custom_single_day = lambda report_date: calls.append(("custom", report_date)) or True  # type: ignore[method-assign]
+    exporter._log_step = lambda message: calls.append(("log", message))  # type: ignore[method-assign]
+
+    exporter._set_douyin_after_sale_export_conditions(report_date="2026-06-15")
+
+    assert ("date_field", "完结时间") in calls
+    assert ("custom", "2026-06-15") in calls
+    assert not any(call == ("shortcut", "昨日") for call in calls)
+
+
+def test_collect_douyin_after_sale_refund_summary_passes_report_date_to_conditions() -> None:
+    """
+    售后工作台退款导出应使用罗盘流程传入的报表日期。
+    """
+    exporter = WebExporter()
+    calls: list[tuple[str, object]] = []
+
+    exporter._open_douyin_after_sale_workbench_page = lambda: calls.append(("open", ""))  # type: ignore[method-assign]
+    exporter._set_douyin_after_sale_export_conditions = lambda report_date=None: calls.append(("conditions", report_date))  # type: ignore[method-assign]
+    exporter._download_douyin_after_sale_orders = lambda download_dir: (_ for _ in ()).throw(  # type: ignore[method-assign]
+        TimeoutException("售后工作台售后单导出为0条，无法导出。")
+    )
+    exporter._build_zero_douyin_after_sale_refund_summary = lambda: {"douyin_refund_metrics": {"refund_total_order_count": 0}}  # type: ignore[method-assign]
+    exporter._log_step = lambda message: calls.append(("log", message))  # type: ignore[method-assign]
+
+    exporter._collect_douyin_after_sale_refund_summary(
+        download_dir=object(),  # type: ignore[arg-type]
+        report_date="2026-06-15",
+    )
+
+    assert ("conditions", "2026-06-15") in calls
+
+
+def test_after_sale_date_range_selected_reads_input_values_when_text_still_placeholder() -> None:
+    """
+    真实售后工作台选择日期后，页面文本仍可能显示“完结时间 请选择”，应读取输入框 value 判断。
+    """
+    exporter = WebExporter()
+
+    class _Driver:
+        def execute_script(self, *_args, **_kwargs) -> list[str]:
+            return [
+                "2026/06/11 00:00:00",
+                "2026/06/11 23:59:59",
+            ]
+
+    exporter.driver = _Driver()  # type: ignore[assignment]
+    exporter._page_text_snippet = lambda max_length=6000: "完结时间 请选择 查 询 导出"  # type: ignore[method-assign]
+
+    assert exporter._is_douyin_after_sale_date_range_selected("2026-06-11") is True
 
 
 def test_collect_douyin_after_sale_refund_summary_treats_zero_export_as_zero(monkeypatch) -> None:

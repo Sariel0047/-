@@ -202,7 +202,13 @@ def collect_platform_metrics(
     按平台路由采集指标。
     """
     if target_platform == "douyin":
-        metrics = web_exporter.collect_douyin_compass_metrics(download_dir=download_dir)
+        if report_date is None:
+            metrics = web_exporter.collect_douyin_compass_metrics(download_dir=download_dir)
+        else:
+            metrics = web_exporter.collect_douyin_compass_metrics(
+                download_dir=download_dir,
+                report_date=report_date,
+            )
         if not isinstance(metrics, dict):
             raise TypeError("web_export.collect_douyin_compass_metrics 必须返回 dict。")
         metrics.setdefault("platform", "douyin")
@@ -232,7 +238,13 @@ def collect_platform_metrics_batch(
     if target_platform == "douyin":
         collect_all = getattr(web_exporter, "collect_douyin_all_shop_metrics", None)
         if callable(collect_all):
-            metrics_list = collect_all(download_dir=download_dir)
+            if report_date is None:
+                metrics_list = collect_all(download_dir=download_dir)
+            else:
+                metrics_list = collect_all(
+                    download_dir=download_dir,
+                    report_date=report_date,
+                )
             if not isinstance(metrics_list, list):
                 raise TypeError("web_export.collect_douyin_all_shop_metrics 必须返回 list。")
             for metrics in metrics_list:

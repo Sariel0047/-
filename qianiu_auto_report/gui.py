@@ -895,7 +895,10 @@ class AppGUI:
                 exported_file = None
                 self.root.after(0, self.append_log, "这一段流程我已经自动跳过。")
                 if target_platform == "douyin":
-                    metrics_list = self.web_exporter.collect_douyin_all_shop_metrics(download_dir=download_dir)
+                    metrics_list = self.web_exporter.collect_douyin_all_shop_metrics(
+                        download_dir=download_dir,
+                        report_date=report_date,
+                    )
                     metrics = metrics_list[0] if metrics_list else None
                 else:
                     metrics = self.web_exporter.collect_business_finance_metrics(

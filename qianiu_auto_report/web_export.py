@@ -505,6 +505,14 @@ class WebExporter:
                 "//*[self::a or self::button or self::span or self::div][contains(normalize-space(),'近1天') or contains(normalize-space(),'近1日')]",
             ),
         ),
+        "douyin_period_custom_tab": (
+            (By.XPATH, "//*[self::a or self::button or self::span or self::div][normalize-space()='自定义']"),
+            (
+                By.XPATH,
+                "//*[contains(@class,'tab') or contains(@class,'time') or contains(@class,'period')]"
+                "//*[self::a or self::button or self::span or self::div][normalize-space()='自定义']",
+            ),
+        ),
         "douyin_business_more_data_link": (
             (
                 By.XPATH,
@@ -3504,6 +3512,397 @@ class WebExporter:
             selector_keys=("douyin_period_last_1day_tab",),
         )
 
+    def _set_douyin_compass_report_date(self, report_date: date | datetime | str) -> None:
+        """
+        在抖音电商罗盘首页选择指定单日；默认昨日仍使用“近1天”，历史日期走“自定义”。
+        """
+        target = self._format_report_date(report_date)
+        if target == DateConfig.default_report_date_str():
+            self._set_douyin_period_last_1day()
+            return
+
+        if self._is_douyin_compass_report_date_selected(target):
+            self._log_step(f"电商罗盘已选择日期：{target}")
+            return
+
+        before_metric_signature = self._douyin_compass_metric_signature()
+        if not self._open_douyin_compass_custom_date_picker():
+            self._raise_timeout_with_context(
+                "电商罗盘未找到【自定义】日期按钮。",
+                selector_keys=("douyin_period_custom_tab",),
+            )
+
+        if not self._is_douyin_compass_custom_date_picker_open():
+            time.sleep(max(self.ui_poll_interval_seconds, 0.2))
+        if not self._is_douyin_compass_custom_date_picker_open():
+            self._raise_timeout_with_context("电商罗盘自定义日期面板未打开。")
+
+        if not self._click_douyin_compass_calendar_day_twice(target):
+            self._raise_timeout_with_context(f"电商罗盘未能选择日期：{target}")
+
+        try:
+            self._wait_until(
+                lambda: self._is_douyin_compass_report_date_selected(target),
+                timeout_seconds=max(min(self.timeout_seconds, 8), 4),
+                message=f"电商罗盘日期未切换到：{target}",
+                selector_keys=("douyin_period_custom_tab",),
+            )
+        except TimeoutException:
+            if not self._did_douyin_compass_refresh_after_date_pick(before_metric_signature):
+                raise
+            self._log_step("图表日期文本未能自动读取，已按核心指标刷新确认日期选择生效")
+        self._log_step(f"电商罗盘已选择日期：{target}")
+
+    def _douyin_compass_metric_signature(self) -> tuple[Optional[float], Optional[float], Optional[float]]:
+        """
+        返回罗盘首页三项核心指标签名，用于判断日期切换后的异步刷新。
+        """
+        snippet = self._page_text_snippet(max_length=16000)
+        return (
+            self._extract_metric_value_after_label_from_text(snippet, "成交金额"),
+            self._extract_metric_value_after_label_from_text(snippet, "成交订单数"),
+            self._extract_metric_value_after_label_from_text(snippet, "支出金额"),
+        )
+
+    def _did_douyin_compass_refresh_after_date_pick(
+        self,
+        before_metric_signature: tuple[Optional[float], Optional[float], Optional[float]],
+    ) -> bool:
+        """
+        当图表日期轴不可从 DOM 读取时，用日期面板关闭和核心指标变化确认切换生效。
+        """
+        if self._is_douyin_compass_custom_date_picker_open():
+            return False
+        after_metric_signature = self._douyin_compass_metric_signature()
+        if not any(value is not None for value in before_metric_signature):
+            return any(value is not None for value in after_metric_signature)
+        return after_metric_signature != before_metric_signature
+
+    def _open_douyin_compass_custom_date_picker(self) -> bool:
+        """
+        点击/悬停“自定义”按钮，打开电商罗盘日期选择器。
+        """
+        driver = self._ensure_driver()
+        candidates: list[WebElement] = []
+        for locator in self.selectors.get("douyin_period_custom_tab", ()):
+            try:
+                candidates.extend(driver.find_elements(*locator))
+            except Exception:
+                continue
+
+        for element in candidates:
+            try:
+                if not element.is_displayed() or not element.is_enabled():
+                    continue
+                ActionChains(driver).move_to_element(element).pause(0.8).perform()
+                time.sleep(max(self.ui_poll_interval_seconds, 0.2))
+                if self._is_douyin_compass_custom_date_picker_open():
+                    return True
+                ActionChains(driver).move_to_element(element).pause(0.1).click().perform()
+                time.sleep(max(self.ui_poll_interval_seconds, 0.2))
+                if self._is_douyin_compass_custom_date_picker_open():
+                    return True
+            except Exception:
+                try:
+                    self._click_with_retry(element)
+                    time.sleep(max(self.ui_poll_interval_seconds, 0.2))
+                    if self._is_douyin_compass_custom_date_picker_open():
+                        return True
+                except Exception:
+                    continue
+
+        clicked = self._try_click_selector("douyin_period_custom_tab", timeout_seconds=2.0) or self._click_text_with_wait(
+            ("自定义",),
+            exact=True,
+            timeout_seconds=2.0,
+            required=False,
+        )
+        if clicked:
+            time.sleep(max(self.ui_poll_interval_seconds, 0.2))
+        return bool(clicked and self._is_douyin_compass_custom_date_picker_open())
+
+    def _is_douyin_compass_custom_date_picker_open(self) -> bool:
+        """
+        判断电商罗盘自定义双月日期面板是否已打开。
+        """
+        driver = self._ensure_driver()
+        try:
+            return bool(
+                driver.execute_script(
+                    """
+                    const normalize = (v) => String(v || '').replace(/\\s+/g, ' ').trim();
+                    const visible = (el) => {
+                      if (!el) return false;
+                      const style = getComputedStyle(el);
+                      const rect = el.getBoundingClientRect();
+                      return style.visibility !== 'hidden' && style.display !== 'none'
+                        && rect.width >= 360 && rect.height >= 220
+                        && rect.bottom >= 0 && rect.top <= window.innerHeight + 80;
+                    };
+                    return Array.from(document.querySelectorAll('div, section'))
+                      .some((el) => {
+                        if (!visible(el)) return false;
+                        const text = normalize(el.innerText || el.textContent || '');
+                        const monthCount = (text.match(/20\\d{2}年\\s*\\d{1,2}月/g) || []).length;
+                        return monthCount >= 1 && text.includes('自定义支持至多连续31天');
+                      });
+                    """
+                )
+            )
+        except Exception:
+            return False
+
+    def _click_douyin_compass_calendar_day_twice(self, report_date: str) -> bool:
+        """
+        在电商罗盘自定义日期面板中连续点击目标日期两次，选择单日范围。
+        """
+        target = self._format_report_date(report_date)
+        if not self._bring_douyin_compass_calendar_month_into_view(target):
+            return False
+
+        first_clicked = self._click_douyin_compass_calendar_day(target)
+        if first_clicked:
+            time.sleep(max(self.ui_poll_interval_seconds, 0.18))
+        second_clicked = self._click_douyin_compass_calendar_day(target)
+        if second_clicked:
+            time.sleep(max(self.ui_poll_interval_seconds, 0.25))
+        return bool(first_clicked and second_clicked)
+
+    def _bring_douyin_compass_calendar_month_into_view(self, report_date: str) -> bool:
+        """
+        尝试把电商罗盘日期面板翻到目标月份。
+        """
+        target = self._format_report_date(report_date)
+        target_year, target_month, _target_day = (int(part) for part in target.split("-"))
+        driver = self._ensure_driver()
+
+        for _ in range(14):
+            visible_months = self._extract_douyin_compass_calendar_months()
+            if any((year, month) == (target_year, target_month) for year, month in visible_months):
+                return True
+            if not visible_months:
+                return False
+
+            min_month = min(visible_months)
+            max_month = max(visible_months)
+            direction = "next" if (target_year, target_month) > max_month else "prev"
+            try:
+                clicked = bool(
+                    driver.execute_script(
+                        """
+                        const direction = arguments[0];
+                        const visible = (el) => {
+                          if (!el) return false;
+                          const style = getComputedStyle(el);
+                          const rect = el.getBoundingClientRect();
+                          return style.visibility !== 'hidden' && style.display !== 'none'
+                            && rect.width >= 8 && rect.height >= 8
+                            && rect.bottom >= 0 && rect.top <= window.innerHeight + 120;
+                        };
+                        const normalize = (v) => String(v || '').replace(/\\s+/g, ' ').trim();
+                        const nodes = Array.from(document.querySelectorAll('button, span, div, i, svg'))
+                          .filter(visible)
+                          .map((el) => {
+                            const rect = el.getBoundingClientRect();
+                            const text = normalize(el.innerText || el.textContent || el.getAttribute('aria-label') || el.getAttribute('title') || '');
+                            const cls = String(el.className || '').toLowerCase();
+                            return { el, rect, text, cls };
+                          })
+                          .filter((item) => {
+                            const hint = `${item.text} ${item.cls}`;
+                            if (direction === 'prev') {
+                              return /上|prev|left|previous|«|‹/.test(hint) || item.text === '<' || item.text === '‹';
+                            }
+                            return /下|next|right|»|›/.test(hint) || item.text === '>' || item.text === '›';
+                          });
+                        nodes.sort((a, b) => direction === 'prev' ? a.rect.left - b.rect.left : b.rect.left - a.rect.left);
+                        if (!nodes.length) return false;
+                        const node = nodes[0].el;
+                        node.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+                        node.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+                        node.click();
+                        return true;
+                        """,
+                        direction,
+                    )
+                )
+            except Exception:
+                clicked = False
+
+            if not clicked:
+                return False
+            time.sleep(max(self.ui_poll_interval_seconds, 0.2))
+
+        return False
+
+    def _extract_douyin_compass_calendar_months(self) -> list[tuple[int, int]]:
+        """
+        读取电商罗盘日期面板当前可见月份。
+        """
+        driver = self._ensure_driver()
+        try:
+            raw_months = driver.execute_script(
+                """
+                const normalize = (v) => String(v || '').replace(/\\s+/g, ' ').trim();
+                const visible = (el) => {
+                  if (!el) return false;
+                  const style = getComputedStyle(el);
+                  const rect = el.getBoundingClientRect();
+                  return style.visibility !== 'hidden' && style.display !== 'none'
+                    && rect.width >= 20 && rect.height >= 12
+                    && rect.bottom >= 0 && rect.top <= window.innerHeight + 120;
+                };
+                const values = [];
+                for (const el of Array.from(document.querySelectorAll('div, span, section'))) {
+                  if (!visible(el)) continue;
+                  const text = normalize(el.innerText || el.textContent || '');
+                  const matches = text.matchAll(/(20\\d{2})年\\s*(\\d{1,2})月/g);
+                  for (const match of matches) {
+                    values.push(`${match[1]}-${String(match[2]).padStart(2, '0')}`);
+                  }
+                }
+                return Array.from(new Set(values));
+                """
+            )
+        except Exception:
+            raw_months = []
+
+        months: list[tuple[int, int]] = []
+        for value in raw_months or []:
+            try:
+                year_text, month_text = str(value).split("-", 1)
+                months.append((int(year_text), int(month_text)))
+            except (TypeError, ValueError):
+                continue
+        return months
+
+    def _click_douyin_compass_calendar_day(self, report_date: str) -> bool:
+        """
+        点击电商罗盘自定义日期面板中的目标日期。
+        """
+        driver = self._ensure_driver()
+        target = self._format_report_date(report_date)
+        target_year, target_month, target_day = (int(part) for part in target.split("-"))
+        day_text = str(target_day)
+        target_month_text = f"{target_year}年{target_month}月"
+
+        try:
+            return bool(
+                driver.execute_script(
+                    """
+                    const target = String(arguments[0] || '');
+                    const targetMonthText = String(arguments[1] || '');
+                    const dayText = String(arguments[2] || '');
+                    const normalize = (v) => String(v || '').replace(/\\s+/g, ' ').trim();
+                    const visible = (el) => {
+                      if (!el) return false;
+                      const style = getComputedStyle(el);
+                      const rect = el.getBoundingClientRect();
+                      return style.visibility !== 'hidden' && style.display !== 'none'
+                        && rect.width >= 10 && rect.height >= 10
+                        && rect.bottom >= 0 && rect.top <= window.innerHeight + 120;
+                    };
+                    const isDisabled = (el) => {
+                      if (!el) return false;
+                      const attrText = [
+                        el.getAttribute('aria-disabled'),
+                        el.getAttribute('disabled'),
+                        el.getAttribute('class'),
+                        el.parentElement && el.parentElement.getAttribute('class'),
+                      ].join(' ').toLowerCase();
+                      return /disabled/.test(attrText) || attrText.includes('true');
+                    };
+                    const clickNode = (node) => {
+                      if (!node || isDisabled(node)) return false;
+                      node.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+                      node.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+                      node.click();
+                      return true;
+                    };
+
+                    const attrMatches = Array.from(document.querySelectorAll('[title], [aria-label], [data-date]'))
+                      .filter(visible)
+                      .filter((el) => {
+                        const text = `${el.getAttribute('title') || ''} ${el.getAttribute('aria-label') || ''} ${el.getAttribute('data-date') || ''}`;
+                        return text.includes(target) && !isDisabled(el);
+                      });
+                    if (attrMatches.length) return clickNode(attrMatches[0]);
+
+                    const monthHeaders = Array.from(document.querySelectorAll('div, span, section'))
+                      .filter(visible)
+                      .map((el) => ({ el, text: normalize(el.innerText || el.textContent || ''), rect: el.getBoundingClientRect() }))
+                      .filter((item) => item.text.replace(/\\s+/g, '') === targetMonthText || item.text.replace(/\\s+/g, '').includes(targetMonthText));
+                    if (!monthHeaders.length) return false;
+                    monthHeaders.sort((a, b) => a.rect.top - b.rect.top || a.rect.left - b.rect.left);
+                    const header = monthHeaders[0].rect;
+
+                    const candidates = Array.from(document.querySelectorAll('td, button, span, div'))
+                      .filter(visible)
+                      .map((el) => ({ el, text: normalize(el.innerText || el.textContent || ''), rect: el.getBoundingClientRect() }))
+                      .filter((item) => item.text === dayText && !isDisabled(item.el))
+                      .filter((item) => item.rect.top > header.bottom && item.rect.top < header.bottom + 430)
+                      .filter((item) => Math.abs((item.rect.left + item.rect.width / 2) - (header.left + header.width / 2)) < Math.max(header.width, 320) / 2 + 80);
+                    candidates.sort((a, b) => a.rect.top - b.rect.top || a.rect.left - b.rect.left);
+                    if (!candidates.length) return false;
+                    return clickNode(candidates[0].el);
+                    """,
+                    target,
+                    target_month_text,
+                    day_text,
+                )
+            )
+        except Exception:
+            return False
+
+    def _is_douyin_compass_report_date_selected(self, report_date: str) -> bool:
+        """
+        通过页面文案/图表横轴判断电商罗盘是否已切换到目标单日。
+        """
+        target = self._format_report_date(report_date)
+        month_day = datetime.strptime(target, DateConfig.DATE_FORMAT).strftime("%m/%d")
+        compact_month_day = month_day.lstrip("0")
+        text = self._page_text_snippet(max_length=12000)
+        compact = re.sub(r"\s+", "", text)
+        if target in text or month_day in text or compact_month_day in text:
+            return True
+        return bool(self._douyin_compass_chart_contains_date(month_day))
+
+    def _douyin_compass_chart_contains_date(self, month_day: str) -> bool:
+        """
+        读取图表 SVG/canvas 周边文本，确认横轴出现目标 MM/DD。
+        """
+        driver = self._ensure_driver()
+        try:
+            return bool(
+                driver.execute_script(
+                    """
+                    const target = String(arguments[0] || '');
+                    const variants = new Set([target, target.replace(/^0/, '')]);
+                    const normalize = (v) => String(v || '').replace(/\\s+/g, ' ').trim();
+                    const visible = (el) => {
+                      if (!el) return false;
+                      const style = getComputedStyle(el);
+                      const rect = el.getBoundingClientRect();
+                      return style.visibility !== 'hidden' && style.display !== 'none'
+                        && rect.width >= 4 && rect.height >= 4
+                        && rect.bottom >= 0 && rect.top <= window.innerHeight + 260;
+                    };
+                    const nodes = Array.from(document.querySelectorAll('svg text, canvas, div, span'))
+                      .filter(visible);
+                    for (const node of nodes) {
+                      const text = normalize(node.innerText || node.textContent || node.getAttribute('aria-label') || node.getAttribute('title') || '');
+                      for (const variant of variants) {
+                        if (text.includes(variant)) return true;
+                      }
+                    }
+                    return false;
+                    """,
+                    month_day,
+                )
+            )
+        except Exception:
+            return False
+
     @classmethod
     def _extract_metric_value_after_label_from_text(cls, text: str, label: str) -> Optional[float]:
         """
@@ -3517,10 +3916,10 @@ class WebExporter:
         label_pattern = re.escape(target_label)
         pattern = re.compile(
             rf"(?<![\u4e00-\u9fffA-Za-z0-9]){label_pattern}\s*[：:]?\s*[¥￥]?\s*"
-            r"([+\-−]?\d[\d,]*(?:\.\d+)?)\s*([万亿]?)"
+            r"([+\-−]?\d[\d,]*(?:\s*\.\s*\d+)?)\s*([万亿]?)"
         )
         for match in pattern.finditer(normalized):
-            parsed = cls._token_to_float(match.group(1))
+            parsed = cls._token_to_float(re.sub(r"\s+", "", match.group(1)))
             if parsed is None:
                 continue
             unit = (match.group(2) or "").strip()
@@ -4296,7 +4695,7 @@ class WebExporter:
         """
         try:
             driver = self._ensure_driver()
-            return bool(
+            ready = bool(
                 driver.execute_script(
                     """
                     const normalize = (value) => String(value || '').replace(/\\s+/g, ' ').trim();
@@ -4328,6 +4727,7 @@ class WebExporter:
                       const tag = String(node.tagName || '').toLowerCase();
                       const role = String(node.getAttribute('role') || '').toLowerCase();
                       const cls = String(node.className || '').toLowerCase();
+                      if (denseText === needle || denseText.includes(needle)) return true;
                       return tag === 'button'
                         || tag === 'a'
                         || role === 'button'
@@ -4341,11 +4741,22 @@ class WebExporter:
                     """
                 )
             )
+            if ready:
+                return True
         except Exception:
             markers = ("售后状态", "售后类型", "导出")
             return all(self._page_contains_text(marker) for marker in markers) and (
                 self._page_contains_text("查询") or self._page_contains_compact_text("查询")
             )
+
+        snippet = self._page_text_snippet(max_length=8000)
+        compact = re.sub(r"\s+", "", snippet)
+        return (
+            "售后状态" in compact
+            and "售后类型" in compact
+            and "导出" in compact
+            and "查询" in compact
+        )
 
     def _open_douyin_after_sale_workbench_page(self) -> None:
         """
@@ -4741,10 +5152,14 @@ class WebExporter:
             time.sleep(max(self.ui_poll_interval_seconds, 0.15))
         return False
 
-    def _set_douyin_after_sale_export_conditions(self) -> None:
+    def _set_douyin_after_sale_export_conditions(
+        self,
+        report_date: date | datetime | str | None = None,
+    ) -> None:
         """
-        设置抖店售后工作台导出条件：退款成功、全部、完结时间昨日。
+        设置抖店售后工作台导出条件：退款成功、全部、按完结时间选择报表日期。
         """
+        report_date_str = self._format_report_date(report_date)
         if not self._select_douyin_after_sale_field_option("售后状态", "退款成功"):
             self._raise_timeout_with_context(
                 "售后工作台未能选择售后状态：退款成功",
@@ -4772,12 +5187,374 @@ class WebExporter:
             )
         self._log_step("售后工作台已选择日期字段：完结时间")
 
-        if not self._select_douyin_after_sale_date_shortcut("昨日"):
+        if report_date_str == DateConfig.default_report_date_str():
+            if not self._select_douyin_after_sale_date_shortcut("昨日"):
+                self._raise_timeout_with_context(
+                    "售后工作台未能选择日期范围：昨日",
+                    selector_keys=("douyin_after_sale_query_button",),
+                )
+            self._log_step("售后工作台已选择日期：昨日")
+            return
+
+        if not self._set_douyin_after_sale_custom_single_day(report_date_str):
             self._raise_timeout_with_context(
-                "售后工作台未能选择日期范围：昨日",
+                f"售后工作台未能选择日期：{report_date_str}",
                 selector_keys=("douyin_after_sale_query_button",),
             )
-        self._log_step("售后工作台已选择日期：昨日")
+        self._log_step(f"售后工作台已选择日期：{report_date_str}")
+
+    def _set_douyin_after_sale_custom_single_day(self, report_date: str) -> bool:
+        """
+        在售后工作台日期范围控件中选择指定单日。
+        """
+        target = self._format_report_date(report_date)
+        if self._is_douyin_after_sale_date_range_selected(target):
+            return True
+        if not self._click_douyin_after_sale_start_date_input():
+            return False
+        time.sleep(max(self.ui_poll_interval_seconds, 0.2))
+        if not self._click_douyin_after_sale_calendar_day_twice(target):
+            return False
+        if not self._click_douyin_after_sale_calendar_confirm():
+            return False
+        try:
+            self._wait_until(
+                lambda: self._is_douyin_after_sale_date_range_selected(target),
+                timeout_seconds=max(self.timeout_seconds, 12),
+                message=f"售后工作台日期未切换到：{target}",
+            )
+        except TimeoutException:
+            return False
+        return True
+
+    def _click_douyin_after_sale_start_date_input(self) -> bool:
+        """
+        点击售后工作台日期范围的开始日期输入框。
+        """
+        driver = self._ensure_driver()
+        try:
+            return bool(
+                driver.execute_script(
+                    """
+                    const normalize = (v) => String(v || '').replace(/\\s+/g, ' ').trim();
+                    const visible = (el) => {
+                      if (!el) return false;
+                      const style = getComputedStyle(el);
+                      const rect = el.getBoundingClientRect();
+                      return style.visibility !== 'hidden' && style.display !== 'none'
+                        && rect.width >= 50 && rect.height >= 18
+                        && rect.bottom >= 0 && rect.top <= window.innerHeight + 120;
+                    };
+                    const clickNode = (node) => {
+                      if (!node) return false;
+                      node.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+                      node.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+                      node.click();
+                      return true;
+                    };
+
+                    const rangeNodes = Array.from(document.querySelectorAll('.auxo-picker-range, [class*="picker-range"], [class*="PickerRange"]'))
+                      .filter(visible)
+                      .map((el) => ({ el, text: normalize(el.innerText || el.textContent || ''), rect: el.getBoundingClientRect() }))
+                      .filter((item) => item.text.includes('开始日期') || item.text.includes('结束日期') || /\\d{4}[/-]\\d{2}[/-]\\d{2}/.test(item.text));
+                    rangeNodes.sort((a, b) => a.rect.top - b.rect.top || a.rect.left - b.rect.left);
+                    const range = rangeNodes[0] && rangeNodes[0].el;
+                    if (range) {
+                      const inputs = Array.from(range.querySelectorAll('input')).filter(visible);
+                      if (inputs.length) return clickNode(inputs[0]);
+                      const children = Array.from(range.querySelectorAll('span, div, button')).filter(visible)
+                        .map((el) => ({ el, text: normalize(el.innerText || el.textContent || el.getAttribute('placeholder') || ''), rect: el.getBoundingClientRect() }))
+                        .filter((item) => item.text.includes('开始日期') || /\\d{4}[/-]\\d{2}[/-]\\d{2}/.test(item.text));
+                      children.sort((a, b) => a.rect.left - b.rect.left);
+                      if (children.length) return clickNode(children[0].el);
+                    }
+
+                    const placeholders = Array.from(document.querySelectorAll('input[placeholder*="开始日期"], input[placeholder*="开始"]'))
+                      .filter(visible);
+                    if (placeholders.length) return clickNode(placeholders[0]);
+                    return false;
+                    """
+                )
+            )
+        except Exception:
+            return False
+
+    def _click_douyin_after_sale_calendar_day_twice(self, report_date: str) -> bool:
+        """
+        在售后工作台日期面板中连续点击目标日期两次。
+        """
+        target = self._format_report_date(report_date)
+        if not self._bring_douyin_after_sale_calendar_month_into_view(target):
+            return False
+        first_clicked = self._click_douyin_after_sale_calendar_day(target)
+        if first_clicked:
+            time.sleep(max(self.ui_poll_interval_seconds, 0.18))
+        second_clicked = self._click_douyin_after_sale_calendar_day(target)
+        if second_clicked:
+            time.sleep(max(self.ui_poll_interval_seconds, 0.2))
+        return bool(first_clicked and second_clicked)
+
+    def _bring_douyin_after_sale_calendar_month_into_view(self, report_date: str) -> bool:
+        """
+        尝试将售后工作台日期面板翻到目标月份。
+        """
+        target = self._format_report_date(report_date)
+        target_year, target_month, _target_day = (int(part) for part in target.split("-"))
+        driver = self._ensure_driver()
+
+        for _ in range(14):
+            visible_months = self._extract_douyin_after_sale_calendar_months()
+            if any((year, month) == (target_year, target_month) for year, month in visible_months):
+                return True
+            if not visible_months:
+                return False
+
+            max_month = max(visible_months)
+            direction = "next" if (target_year, target_month) > max_month else "prev"
+            try:
+                clicked = bool(
+                    driver.execute_script(
+                        """
+                        const direction = arguments[0];
+                        const normalize = (v) => String(v || '').replace(/\\s+/g, ' ').trim();
+                        const visible = (el) => {
+                          if (!el) return false;
+                          const style = getComputedStyle(el);
+                          const rect = el.getBoundingClientRect();
+                          return style.visibility !== 'hidden' && style.display !== 'none'
+                            && rect.width >= 8 && rect.height >= 8
+                            && rect.bottom >= 0 && rect.top <= window.innerHeight + 140;
+                        };
+                        const nodes = Array.from(document.querySelectorAll('button, span, div, i, svg'))
+                          .filter(visible)
+                          .map((el) => {
+                            const rect = el.getBoundingClientRect();
+                            const text = normalize(el.innerText || el.textContent || el.getAttribute('aria-label') || el.getAttribute('title') || '');
+                            const cls = String(el.className || '').toLowerCase();
+                            return { el, rect, text, cls };
+                          })
+                          .filter((item) => {
+                            const hint = `${item.text} ${item.cls}`;
+                            if (direction === 'prev') {
+                              return /上|prev|left|previous|«|‹/.test(hint) || item.text === '<' || item.text === '‹';
+                            }
+                            return /下|next|right|»|›/.test(hint) || item.text === '>' || item.text === '›';
+                          });
+                        nodes.sort((a, b) => direction === 'prev' ? a.rect.left - b.rect.left : b.rect.left - a.rect.left);
+                        if (!nodes.length) return false;
+                        const node = nodes[0].el;
+                        node.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+                        node.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+                        node.click();
+                        return true;
+                        """,
+                        direction,
+                    )
+                )
+            except Exception:
+                clicked = False
+            if not clicked:
+                return False
+            time.sleep(max(self.ui_poll_interval_seconds, 0.2))
+        return False
+
+    def _extract_douyin_after_sale_calendar_months(self) -> list[tuple[int, int]]:
+        """
+        读取售后工作台日期面板当前可见月份。
+        """
+        driver = self._ensure_driver()
+        try:
+            raw_months = driver.execute_script(
+                """
+                const normalize = (v) => String(v || '').replace(/\\s+/g, ' ').trim();
+                const visible = (el) => {
+                  if (!el) return false;
+                  const style = getComputedStyle(el);
+                  const rect = el.getBoundingClientRect();
+                  return style.visibility !== 'hidden' && style.display !== 'none'
+                    && rect.width >= 20 && rect.height >= 12
+                    && rect.bottom >= 0 && rect.top <= window.innerHeight + 140;
+                };
+                const values = [];
+                for (const el of Array.from(document.querySelectorAll('div, span, section'))) {
+                  if (!visible(el)) continue;
+                  const text = normalize(el.innerText || el.textContent || '');
+                  const matches = text.matchAll(/(20\\d{2})年\\s*(\\d{1,2})月/g);
+                  for (const match of matches) {
+                    values.push(`${match[1]}-${String(match[2]).padStart(2, '0')}`);
+                  }
+                }
+                return Array.from(new Set(values));
+                """
+            )
+        except Exception:
+            raw_months = []
+
+        months: list[tuple[int, int]] = []
+        for value in raw_months or []:
+            try:
+                year_text, month_text = str(value).split("-", 1)
+                months.append((int(year_text), int(month_text)))
+            except (TypeError, ValueError):
+                continue
+        return months
+
+    def _click_douyin_after_sale_calendar_day(self, report_date: str) -> bool:
+        """
+        点击售后工作台日期面板中的目标日期。
+        """
+        driver = self._ensure_driver()
+        target = self._format_report_date(report_date)
+        target_year, target_month, target_day = (int(part) for part in target.split("-"))
+        day_text = str(target_day)
+        target_month_text = f"{target_year}年{target_month}月"
+
+        try:
+            return bool(
+                driver.execute_script(
+                    """
+                    const target = String(arguments[0] || '');
+                    const targetMonthText = String(arguments[1] || '');
+                    const dayText = String(arguments[2] || '');
+                    const normalize = (v) => String(v || '').replace(/\\s+/g, ' ').trim();
+                    const visible = (el) => {
+                      if (!el) return false;
+                      const style = getComputedStyle(el);
+                      const rect = el.getBoundingClientRect();
+                      return style.visibility !== 'hidden' && style.display !== 'none'
+                        && rect.width >= 10 && rect.height >= 10
+                        && rect.bottom >= 0 && rect.top <= window.innerHeight + 140;
+                    };
+                    const isDisabled = (el) => {
+                      if (!el) return false;
+                      const attrText = [
+                        el.getAttribute('aria-disabled'),
+                        el.getAttribute('disabled'),
+                        el.getAttribute('class'),
+                        el.parentElement && el.parentElement.getAttribute('class'),
+                      ].join(' ').toLowerCase();
+                      return /disabled/.test(attrText) || attrText.includes('true');
+                    };
+                    const clickNode = (node) => {
+                      if (!node || isDisabled(node)) return false;
+                      node.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+                      node.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+                      node.click();
+                      return true;
+                    };
+
+                    const panels = Array.from(document.querySelectorAll('.auxo-picker-panel, .auxo-picker-date-panel'))
+                      .filter(visible)
+                      .map((panel) => ({ panel, text: normalize(panel.innerText || panel.textContent || ''), rect: panel.getBoundingClientRect() }))
+                      .filter((item) => item.text.replace(/\\s+/g, '').includes(targetMonthText));
+                    panels.sort((a, b) => a.rect.top - b.rect.top || a.rect.left - b.rect.left);
+                    const panel = panels[0] && panels[0].panel;
+                    if (!panel) return false;
+
+                    const attrMatches = Array.from(panel.querySelectorAll('[title], [aria-label], [data-date]'))
+                      .filter(visible)
+                      .filter((el) => {
+                        const text = `${el.getAttribute('title') || ''} ${el.getAttribute('aria-label') || ''} ${el.getAttribute('data-date') || ''}`;
+                        return text.includes(target) && !isDisabled(el);
+                      });
+                    if (attrMatches.length) return clickNode(attrMatches[0]);
+
+                    const candidates = Array.from(panel.querySelectorAll('td, .auxo-picker-cell, .auxo-picker-cell-inner, button, span, div'))
+                      .filter(visible)
+                      .map((el) => ({ el, text: normalize(el.innerText || el.textContent || ''), rect: el.getBoundingClientRect() }))
+                      .filter((item) => item.text === dayText && !isDisabled(item.el))
+                      .filter((item) => {
+                        const cls = String(item.el.className || '').toLowerCase();
+                        return item.el.tagName.toLowerCase() === 'td' || cls.includes('picker-cell-inner');
+                      });
+                    candidates.sort((a, b) => a.rect.top - b.rect.top || a.rect.left - b.rect.left);
+                    if (!candidates.length) return false;
+                    return clickNode(candidates[0].el);
+                    """,
+                    target,
+                    target_month_text,
+                    day_text,
+                )
+            )
+        except Exception:
+            return False
+
+    def _click_douyin_after_sale_calendar_confirm(self) -> bool:
+        """
+        点击售后工作台日期面板的【确定】。
+        """
+        driver = self._ensure_driver()
+        try:
+            clicked = bool(
+                driver.execute_script(
+                    """
+                    const normalize = (v) => String(v || '').replace(/\\s+/g, ' ').trim();
+                    const visible = (el) => {
+                      if (!el) return false;
+                      const style = getComputedStyle(el);
+                      const rect = el.getBoundingClientRect();
+                      return style.visibility !== 'hidden' && style.display !== 'none'
+                        && rect.width >= 10 && rect.height >= 10
+                        && rect.bottom >= 0 && rect.top <= window.innerHeight + 140;
+                    };
+                    const dropdowns = Array.from(document.querySelectorAll('.auxo-picker-dropdown, .sp-range-picker-join-dropdown'))
+                      .filter(visible);
+                    for (const dropdown of dropdowns) {
+                      const buttons = Array.from(dropdown.querySelectorAll('button, [role="button"], .sp-picker-range-ok-btn'))
+                        .filter(visible)
+                        .filter((el) => normalize(el.innerText || el.textContent || '') === '确定');
+                      if (!buttons.length) continue;
+                      const node = buttons[buttons.length - 1];
+                      node.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+                      node.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+                      node.click();
+                      return true;
+                    }
+                    return false;
+                    """
+                )
+            )
+        except Exception:
+            clicked = False
+        if not clicked:
+            clicked = self._click_text_with_wait(("确定",), exact=True, timeout_seconds=5.0, required=False)
+        if clicked:
+            time.sleep(max(self.ui_poll_interval_seconds, 0.25))
+        return clicked
+
+    def _is_douyin_after_sale_date_range_selected(self, report_date: str) -> bool:
+        """
+        判断售后工作台日期范围是否显示为目标单日。
+        """
+        target = self._format_report_date(report_date)
+        slash = target.replace("-", "/")
+        compact_values = ""
+        try:
+            driver = self._ensure_driver()
+            input_values = driver.execute_script(
+                """
+                const visible = (el) => {
+                  if (!el) return false;
+                  const style = getComputedStyle(el);
+                  const rect = el.getBoundingClientRect();
+                  return style.visibility !== 'hidden' && style.display !== 'none'
+                    && rect.width >= 20 && rect.height >= 12
+                    && rect.bottom >= 0 && rect.top <= window.innerHeight + 140;
+                };
+                return Array.from(document.querySelectorAll('input'))
+                  .filter(visible)
+                  .map((input) => String(input.value || '').trim())
+                  .filter(Boolean);
+                """
+            )
+            compact_values = re.sub(r"\s+", "", " ".join(str(value) for value in (input_values or [])))
+        except Exception:
+            compact_values = ""
+
+        compact = compact_values + re.sub(r"\s+", "", self._page_text_snippet(max_length=6000))
+        start_ok = f"{slash}00:00:00" in compact or f"{target}00:00:00" in compact
+        end_ok = f"{slash}23:59:59" in compact or f"{target}23:59:59" in compact
+        return start_ok and end_ok
 
     def _download_douyin_after_sale_orders(self, download_dir: Path) -> Path:
         """
@@ -4864,14 +5641,21 @@ class WebExporter:
         summary["report_date"] = DateConfig.default_report_date_str()
         return summary
 
-    def _collect_douyin_after_sale_refund_summary(self, download_dir: Path) -> dict[str, Any]:
+    def _collect_douyin_after_sale_refund_summary(
+        self,
+        download_dir: Path,
+        report_date: date | datetime | str | None = None,
+    ) -> dict[str, Any]:
         """
         从抖店售后工作台导出售后单并汇总退款。
         """
         from qianiu_auto_report.data_process import DataProcessor
 
         self._open_douyin_after_sale_workbench_page()
-        self._set_douyin_after_sale_export_conditions()
+        if report_date is None:
+            self._set_douyin_after_sale_export_conditions()
+        else:
+            self._set_douyin_after_sale_export_conditions(report_date=report_date)
         try:
             detail_file = self._download_douyin_after_sale_orders(download_dir=download_dir)
         except TimeoutException as exc:
@@ -4900,18 +5684,19 @@ class WebExporter:
         expense_amount: float,
         shop_name: str = "",
         refund_summary: Optional[dict[str, Any]] = None,
+        report_date: date | datetime | str | None = None,
     ) -> dict[str, Any]:
         """
         将抖店电商罗盘指标映射到当前报表字段结构。
         """
         order_count = int(round(float(trade_order_count)))
-        report_date = DateConfig.default_report_date_str()
+        result_report_date = self._format_report_date(report_date)
         if refund_summary is not None:
             summary_report_date = str(refund_summary.get("report_date", "") or "").strip()
-            if summary_report_date:
-                report_date = summary_report_date
+            if summary_report_date and report_date is None:
+                result_report_date = summary_report_date
         result = {
-            "report_date": report_date,
+            "report_date": result_report_date,
             "platform": "douyin",
             "shop_name": str(shop_name or "").strip(),
             "payment_buyer_count": order_count,
@@ -4930,9 +5715,10 @@ class WebExporter:
         download_dir: Optional[Path] = None,
         login_handler: Optional[Callable[[webdriver.Chrome], None]] = None,
         switch_to_existing_page: bool = True,
+        report_date: date | datetime | str | None = None,
     ) -> dict[str, Any]:
         """
-        采集抖店指标：弹窗关闭 -> 电商罗盘 -> 近1天 -> 读取成交金额/成交订单数/支出金额。
+        采集抖店指标：弹窗关闭 -> 电商罗盘 -> 选择日期 -> 读取成交金额/成交订单数/支出金额。
         """
         self._ensure_douyin_runtime_context()
         self.validate_runtime_config()
@@ -4953,7 +5739,8 @@ class WebExporter:
         self._log_step("抖店退款数据来源：售后工作台售后单")
 
         self._open_douyin_compass_page()
-        self._set_douyin_period_last_1day()
+        report_date_str = self._format_report_date(report_date)
+        self._set_douyin_compass_report_date(report_date_str)
         self._promotion_pause(1.0)
 
         trade_amount = self._extract_douyin_compass_metric("成交金额")
@@ -4963,7 +5750,13 @@ class WebExporter:
         if shop_name:
             self._log_step(f"抖店店铺名：{shop_name}")
         target_dir = Path(download_dir) if download_dir is not None else Path(ExportConfig.DOWNLOAD_DIR)
-        refund_summary = self._collect_douyin_after_sale_refund_summary(download_dir=target_dir)
+        if report_date is None:
+            refund_summary = self._collect_douyin_after_sale_refund_summary(download_dir=target_dir)
+        else:
+            refund_summary = self._collect_douyin_after_sale_refund_summary(
+                download_dir=target_dir,
+                report_date=report_date_str,
+            )
 
         self._log_step(
             "电商罗盘提取结果："
@@ -4975,6 +5768,7 @@ class WebExporter:
             expense_amount=expense_amount,
             shop_name=shop_name,
             refund_summary=refund_summary,
+            report_date=report_date_str,
         )
 
     def collect_douyin_all_shop_metrics(
@@ -4982,6 +5776,7 @@ class WebExporter:
         download_dir: Optional[Path] = None,
         login_handler: Optional[Callable[[webdriver.Chrome], None]] = None,
         max_shops: int = 5,
+        report_date: date | datetime | str | None = None,
     ) -> list[dict[str, Any]]:
         """
         采集当前抖店及店铺切换弹层中其它店铺的数据，每个店铺返回一组报表指标。
@@ -4997,11 +5792,14 @@ class WebExporter:
             if not expected_shop_name:
                 expected_shop_name = self._get_current_douyin_home_shop_name() or None
 
-            metrics = self.collect_douyin_compass_metrics(
-                download_dir=target_dir,
-                login_handler=login_handler if index == 0 else None,
-                switch_to_existing_page=(index == 0 and not expected_shop_name),
-            )
+            collect_kwargs: dict[str, Any] = {
+                "download_dir": target_dir,
+                "login_handler": login_handler if index == 0 else None,
+                "switch_to_existing_page": (index == 0 and not expected_shop_name),
+            }
+            if report_date is not None:
+                collect_kwargs["report_date"] = report_date
+            metrics = self.collect_douyin_compass_metrics(**collect_kwargs)
             metrics.setdefault("platform", "douyin")
 
             if expected_shop_name:
