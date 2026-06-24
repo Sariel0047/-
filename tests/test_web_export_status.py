@@ -217,6 +217,27 @@ def test_collect_home_metrics_uses_qianniu_data_for_explicit_report_date() -> No
     assert call_order == ["qn-data:2026-06-07"]
 
 
+def test_collect_home_metrics_keeps_shop_name_when_qianniu_data_page_loses_it() -> None:
+    """
+    指定历史日期时，如果【数据】页未识别店铺名，应保留跳转前首页/壳层读取到的店铺名。
+    """
+    exporter = WebExporter()
+    call_order: list[str] = []
+
+    exporter._extract_home_shop_name = lambda: call_order.append("extract_shop") or "vullvan瑜妍旗舰店"  # type: ignore[method-assign]
+    exporter._collect_qianniu_data_dashboard_metrics = lambda report_date: call_order.append(f"qn-data:{report_date}") or {  # type: ignore[method-assign]
+        "shop_name": "",
+        "payment_amount": 515.0,
+        "payment_buyer_count": 4,
+        "payment_sub_order_count": 5,
+    }
+
+    metrics = exporter._collect_home_dashboard_metrics(report_date=date(2026, 6, 7))
+
+    assert metrics["shop_name"] == "vullvan瑜妍旗舰店"
+    assert call_order == ["qn-data:2026-06-07", "extract_shop"]
+
+
 def test_extract_qianniu_data_metric_prefers_top_overview() -> None:
     """
     千牛极速版【数据】页应只读顶部全店数据区域，避开下方商品表格同名列。

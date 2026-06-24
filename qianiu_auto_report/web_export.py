@@ -9808,7 +9808,13 @@ class WebExporter:
         if report_date is not None:
             report_date_str = self._format_report_date(report_date)
             if report_date_str != DateConfig.default_report_date_str():
-                return self._collect_qianniu_data_dashboard_metrics(report_date_str)
+                metrics = self._collect_qianniu_data_dashboard_metrics(report_date_str)
+                if not str(metrics.get("shop_name") or "").strip():
+                    fallback_shop_name = self._extract_home_shop_name_from_home_page()
+                    if fallback_shop_name:
+                        self._log_step(f"首页店铺名兜底识别：{fallback_shop_name}")
+                        metrics["shop_name"] = fallback_shop_name
+                return metrics
 
         self._navigate_to_url(self.export_url or "https://myseller.taobao.com/home.htm/QnworkbenchHome/")
         self._close_corner_popup_if_present()
@@ -9831,6 +9837,30 @@ class WebExporter:
             "payment_buyer_count": int(round(payment_buyers)),
             "payment_sub_order_count": int(round(payment_sub_orders)),
         }
+
+    def _extract_home_shop_name_from_home_page(self) -> str:
+        """
+        回到千牛首页读取店铺名，用于历史日期数据页无法识别店铺名时兜底。
+        """
+        try:
+            shop_name = self._extract_home_shop_name()
+            if shop_name and not self._looks_like_qianniu_data_metric_text(shop_name):
+                return shop_name
+        except Exception:
+            pass
+
+        try:
+            self._navigate_to_url(self.export_url or "https://myseller.taobao.com/home.htm/QnworkbenchHome/")
+            self._close_corner_popup_if_present()
+            self._switch_to_speed_version_if_needed()
+            self._close_corner_popup_if_present()
+            shop_name = self._extract_home_shop_name()
+            if self._looks_like_qianniu_data_metric_text(shop_name):
+                return ""
+            return shop_name
+        except Exception as exc:
+            self._log_step(f"首页店铺名兜底识别失败：{type(exc).__name__}: {exc}")
+            return ""
 
     def _collect_trade_compensation_amount(
         self,
