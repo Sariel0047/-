@@ -3700,22 +3700,44 @@ class WebExporter:
                             && rect.bottom >= 0 && rect.top <= window.innerHeight + 120;
                         };
                         const normalize = (v) => String(v || '').replace(/\\s+/g, ' ').trim();
-                        const nodes = Array.from(document.querySelectorAll('button, span, div, i, svg'))
+                        const panelRoots = Array.from(document.querySelectorAll(
+                          '.auxo-picker-panel, .auxo-picker-date-panel, .auxo-picker-dropdown, ' +
+                          '.sp-range-picker-join-dropdown, [class*="picker-panel"], [class*="picker-dropdown"], [class*="date-panel"]'
+                        ))
+                          .filter(visible)
+                          .filter((el) => /20\\d{2}年\\s*\\d{1,2}月/.test(normalize(el.innerText || el.textContent || '')));
+                        const searchRoots = panelRoots.length ? panelRoots : [document];
+                        const nodes = searchRoots.flatMap((root) => Array.from(root.querySelectorAll('button, span, div, i, svg')))
                           .filter(visible)
                           .map((el) => {
                             const rect = el.getBoundingClientRect();
                             const text = normalize(el.innerText || el.textContent || el.getAttribute('aria-label') || el.getAttribute('title') || '');
                             const cls = String(el.className || '').toLowerCase();
-                            return { el, rect, text, cls };
-                          })
-                          .filter((item) => {
-                            const hint = `${item.text} ${item.cls}`;
-                            if (direction === 'prev') {
-                              return /上|prev|left|previous|«|‹/.test(hint) || item.text === '<' || item.text === '‹';
+                            const cleanCls = cls.replace(/placement-[a-z-]+/g, ' ');
+                            const hint = `${text} ${cleanCls}`.toLowerCase();
+                            const isCalendarNav = /picker-header-(super-)?(prev|next)-btn|picker-(super-)?(prev|next)-icon|\\b(prev|next)-btn\\b|\\b(prev|next)-icon\\b/.test(cleanCls)
+                              || /^[<>‹›«»]$/.test(text)
+                              || /上个月|上一月|下个月|下一月|上一年|下一年/.test(text);
+                            const isJumpArrow = /«|»|super|jump|double|year|年份|年度|上一年|下一年/.test(hint);
+                            let singleArrowScore = 0;
+                            if (isCalendarNav && !isJumpArrow) {
+                              if (direction === 'prev' && (/‹|<|上个月|上一月|prev|left|previous/.test(hint))) singleArrowScore = 2;
+                              if (direction === 'next' && (/›|>|下个月|下一月|next|right/.test(hint))) singleArrowScore = 2;
                             }
-                            return /下|next|right|»|›/.test(hint) || item.text === '>' || item.text === '›';
+                            return { el, rect, text, cls, hint, isCalendarNav, isJumpArrow, singleArrowScore };
+                          })
+                          .filter((item) => item.isCalendarNav)
+                          .filter((item) => {
+                            if (direction === 'prev') {
+                              return /上|prev|left|previous|«|‹/.test(item.hint) || item.text === '<' || item.text === '‹';
+                            }
+                            return /下|next|right|»|›/.test(item.hint) || item.text === '>' || item.text === '›';
                           });
-                        nodes.sort((a, b) => direction === 'prev' ? a.rect.left - b.rect.left : b.rect.left - a.rect.left);
+                        nodes.sort((a, b) => {
+                          if (b.singleArrowScore !== a.singleArrowScore) return b.singleArrowScore - a.singleArrowScore;
+                          if (a.isJumpArrow !== b.isJumpArrow) return a.isJumpArrow ? 1 : -1;
+                          return direction === 'prev' ? a.rect.left - b.rect.left : b.rect.left - a.rect.left;
+                        });
                         if (!nodes.length) return false;
                         const node = nodes[0].el;
                         node.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
@@ -3785,6 +3807,7 @@ class WebExporter:
         target_year, target_month, target_day = (int(part) for part in target.split("-"))
         day_text = str(target_day)
         target_month_text = f"{target_year}年{target_month}月"
+        target_month_padded_text = f"{target_year}年{target_month:02d}月"
 
         try:
             return bool(
@@ -3792,7 +3815,11 @@ class WebExporter:
                     """
                     const target = String(arguments[0] || '');
                     const targetMonthText = String(arguments[1] || '');
-                    const dayText = String(arguments[2] || '');
+                    const targetMonthPaddedText = String(arguments[2] || '');
+                    const dayText = String(arguments[3] || '');
+                    const targetMonthVariants = [targetMonthText, targetMonthPaddedText]
+                      .map((value) => value.replace(/\\s+/g, ''))
+                      .filter(Boolean);
                     const normalize = (v) => String(v || '').replace(/\\s+/g, ' ').trim();
                     const visible = (el) => {
                       if (!el) return false;
@@ -3820,34 +3847,46 @@ class WebExporter:
                       return true;
                     };
 
-                    const attrMatches = Array.from(document.querySelectorAll('[title], [aria-label], [data-date]'))
+                    const monthMatches = (text) => {
+                      const compact = normalize(text).replace(/\\s+/g, '');
+                      return targetMonthVariants.some((variant) => compact.includes(variant));
+                    };
+                    const panels = Array.from(document.querySelectorAll(
+                      '.auxo-picker-panel, .auxo-picker-date-panel, .auxo-picker-dropdown, ' +
+                      '.sp-range-picker-join-dropdown, [class*="picker-panel"], [class*="picker-dropdown"], [class*="date-panel"]'
+                    ))
                       .filter(visible)
-                      .filter((el) => {
-                        const text = `${el.getAttribute('title') || ''} ${el.getAttribute('aria-label') || ''} ${el.getAttribute('data-date') || ''}`;
-                        return text.includes(target) && !isDisabled(el);
-                      });
-                    if (attrMatches.length) return clickNode(attrMatches[0]);
+                      .map((panel) => ({ panel, text: normalize(panel.innerText || panel.textContent || ''), rect: panel.getBoundingClientRect() }))
+                      .filter((item) => monthMatches(item.text));
+                    panels.sort((a, b) => a.rect.top - b.rect.top || a.rect.left - b.rect.left);
 
-                    const monthHeaders = Array.from(document.querySelectorAll('div, span, section'))
-                      .filter(visible)
-                      .map((el) => ({ el, text: normalize(el.innerText || el.textContent || ''), rect: el.getBoundingClientRect() }))
-                      .filter((item) => item.text.replace(/\\s+/g, '') === targetMonthText || item.text.replace(/\\s+/g, '').includes(targetMonthText));
-                    if (!monthHeaders.length) return false;
-                    monthHeaders.sort((a, b) => a.rect.top - b.rect.top || a.rect.left - b.rect.left);
-                    const header = monthHeaders[0].rect;
+                    const searchRoots = panels.length ? panels.map((item) => item.panel) : [document];
+                    for (const panel of searchRoots) {
+                      const attrMatches = Array.from(panel.querySelectorAll('[title], [aria-label], [data-date]'))
+                        .filter(visible)
+                        .filter((el) => {
+                          const text = `${el.getAttribute('title') || ''} ${el.getAttribute('aria-label') || ''} ${el.getAttribute('data-date') || ''}`;
+                          return text.includes(target) && !isDisabled(el);
+                        });
+                      if (attrMatches.length) return clickNode(attrMatches[0]);
 
-                    const candidates = Array.from(document.querySelectorAll('td, button, span, div'))
-                      .filter(visible)
-                      .map((el) => ({ el, text: normalize(el.innerText || el.textContent || ''), rect: el.getBoundingClientRect() }))
-                      .filter((item) => item.text === dayText && !isDisabled(item.el))
-                      .filter((item) => item.rect.top > header.bottom && item.rect.top < header.bottom + 430)
-                      .filter((item) => Math.abs((item.rect.left + item.rect.width / 2) - (header.left + header.width / 2)) < Math.max(header.width, 320) / 2 + 80);
-                    candidates.sort((a, b) => a.rect.top - b.rect.top || a.rect.left - b.rect.left);
-                    if (!candidates.length) return false;
-                    return clickNode(candidates[0].el);
+                      const candidates = Array.from(panel.querySelectorAll('td, .auxo-picker-cell, .auxo-picker-cell-inner, button, span, div'))
+                        .filter(visible)
+                        .map((el) => ({ el, text: normalize(el.innerText || el.textContent || ''), rect: el.getBoundingClientRect() }))
+                        .filter((item) => item.text === dayText && !isDisabled(item.el))
+                        .filter((item) => {
+                          const cls = String(item.el.className || '').toLowerCase();
+                          const tag = item.el.tagName.toLowerCase();
+                          return tag === 'td' || cls.includes('picker-cell') || cls.includes('day') || cls.includes('date');
+                        });
+                      candidates.sort((a, b) => a.rect.top - b.rect.top || a.rect.left - b.rect.left);
+                      if (candidates.length) return clickNode(candidates[0].el);
+                    }
+                    return false;
                     """,
                     target,
                     target_month_text,
+                    target_month_padded_text,
                     day_text,
                 )
             )
@@ -5325,22 +5364,44 @@ class WebExporter:
                             && rect.width >= 8 && rect.height >= 8
                             && rect.bottom >= 0 && rect.top <= window.innerHeight + 140;
                         };
-                        const nodes = Array.from(document.querySelectorAll('button, span, div, i, svg'))
+                        const panelRoots = Array.from(document.querySelectorAll(
+                          '.auxo-picker-panel, .auxo-picker-date-panel, .auxo-picker-dropdown, ' +
+                          '.sp-range-picker-join-dropdown, [class*="picker-panel"], [class*="picker-dropdown"], [class*="date-panel"]'
+                        ))
+                          .filter(visible)
+                          .filter((el) => /20\\d{2}年\\s*\\d{1,2}月/.test(normalize(el.innerText || el.textContent || '')));
+                        const searchRoots = panelRoots.length ? panelRoots : [document];
+                        const nodes = searchRoots.flatMap((root) => Array.from(root.querySelectorAll('button, span, div, i, svg')))
                           .filter(visible)
                           .map((el) => {
                             const rect = el.getBoundingClientRect();
                             const text = normalize(el.innerText || el.textContent || el.getAttribute('aria-label') || el.getAttribute('title') || '');
                             const cls = String(el.className || '').toLowerCase();
-                            return { el, rect, text, cls };
-                          })
-                          .filter((item) => {
-                            const hint = `${item.text} ${item.cls}`;
-                            if (direction === 'prev') {
-                              return /上|prev|left|previous|«|‹/.test(hint) || item.text === '<' || item.text === '‹';
+                            const cleanCls = cls.replace(/placement-[a-z-]+/g, ' ');
+                            const hint = `${text} ${cleanCls}`.toLowerCase();
+                            const isCalendarNav = /picker-header-(super-)?(prev|next)-btn|picker-(super-)?(prev|next)-icon|\\b(prev|next)-btn\\b|\\b(prev|next)-icon\\b/.test(cleanCls)
+                              || /^[<>‹›«»]$/.test(text)
+                              || /上个月|上一月|下个月|下一月|上一年|下一年/.test(text);
+                            const isJumpArrow = /«|»|super|jump|double|year|年份|年度|上一年|下一年/.test(hint);
+                            let singleArrowScore = 0;
+                            if (isCalendarNav && !isJumpArrow) {
+                              if (direction === 'prev' && (/‹|<|上个月|上一月|prev|left|previous/.test(hint))) singleArrowScore = 2;
+                              if (direction === 'next' && (/›|>|下个月|下一月|next|right/.test(hint))) singleArrowScore = 2;
                             }
-                            return /下|next|right|»|›/.test(hint) || item.text === '>' || item.text === '›';
+                            return { el, rect, text, cls, hint, isCalendarNav, isJumpArrow, singleArrowScore };
+                          })
+                          .filter((item) => item.isCalendarNav)
+                          .filter((item) => {
+                            if (direction === 'prev') {
+                              return /上|prev|left|previous|«|‹/.test(item.hint) || item.text === '<' || item.text === '‹';
+                            }
+                            return /下|next|right|»|›/.test(item.hint) || item.text === '>' || item.text === '›';
                           });
-                        nodes.sort((a, b) => direction === 'prev' ? a.rect.left - b.rect.left : b.rect.left - a.rect.left);
+                        nodes.sort((a, b) => {
+                          if (b.singleArrowScore !== a.singleArrowScore) return b.singleArrowScore - a.singleArrowScore;
+                          if (a.isJumpArrow !== b.isJumpArrow) return a.isJumpArrow ? 1 : -1;
+                          return direction === 'prev' ? a.rect.left - b.rect.left : b.rect.left - a.rect.left;
+                        });
                         if (!nodes.length) return false;
                         const node = nodes[0].el;
                         node.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));

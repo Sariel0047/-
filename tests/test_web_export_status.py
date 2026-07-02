@@ -1765,6 +1765,129 @@ def test_set_douyin_compass_report_date_accepts_metric_refresh_when_axis_text_is
     assert calls[-1] == "电商罗盘已选择日期：2026-06-15"
 
 
+def test_click_douyin_compass_calendar_day_scopes_lookup_to_picker_panel() -> None:
+    """
+    罗盘自定义日期面板可能存在包含整个月份文案的大容器；点击日期时应限定在日期面板内查找。
+    """
+    exporter = WebExporter()
+
+    class _Driver:
+        def execute_script(self, script: str, *_args: object) -> bool:
+            return ".auxo-picker-panel" in script and "panel.querySelectorAll" in script
+
+    exporter.driver = _Driver()  # type: ignore[assignment]
+
+    assert exporter._click_douyin_compass_calendar_day("2026-06-30") is True
+
+
+@pytest.mark.parametrize(
+    ("target", "month_sequence", "expected_calls"),
+    [
+        (
+            "2026-05-01",
+            [[(2026, 7), (2026, 8)], [(2026, 6), (2026, 7)], [(2026, 5), (2026, 6)]],
+            ["prev", "prev"],
+        ),
+        (
+            "2026-06-30",
+            [[(2026, 7), (2026, 8)], [(2026, 6), (2026, 7)]],
+            ["prev"],
+        ),
+        (
+            "2026-09-01",
+            [[(2026, 7), (2026, 8)], [(2026, 8), (2026, 9)]],
+            ["next"],
+        ),
+        (
+            "2026-07-02",
+            [[(2026, 7), (2026, 8)]],
+            [],
+        ),
+    ],
+)
+def test_bring_douyin_compass_calendar_month_matches_target_month(
+    target: str,
+    month_sequence: list[list[tuple[int, int]]],
+    expected_calls: list[str],
+) -> None:
+    """
+    日期面板应按目标年月和当前可见月份比较，连续点击单月箭头直到目标月份可见。
+    """
+    exporter = WebExporter()
+    calls: list[str] = []
+
+    def _fake_months() -> list[tuple[int, int]]:
+        index = min(len(calls), len(month_sequence) - 1)
+        return month_sequence[index]
+
+    class _Driver:
+        def execute_script(self, script: str, direction: str) -> bool:
+            calls.append(direction)
+            return (
+                direction in {"prev", "next"}
+                and "isJumpArrow" in script
+                and "singleArrowScore" in script
+                and "super" in script
+            )
+
+    exporter.driver = _Driver()  # type: ignore[assignment]
+    exporter._extract_douyin_compass_calendar_months = _fake_months  # type: ignore[method-assign]
+
+    assert exporter._bring_douyin_compass_calendar_month_into_view(target) is True
+    assert calls == expected_calls
+
+
+@pytest.mark.parametrize(
+    ("target", "month_sequence", "expected_calls"),
+    [
+        (
+            "2026-06-30",
+            [[(2026, 7), (2026, 8)], [(2026, 6), (2026, 7)]],
+            ["prev"],
+        ),
+        (
+            "2026-05-01",
+            [[(2026, 7), (2026, 8)], [(2026, 6), (2026, 7)], [(2026, 5), (2026, 6)]],
+            ["prev", "prev"],
+        ),
+        (
+            "2026-09-01",
+            [[(2026, 7), (2026, 8)], [(2026, 8), (2026, 9)]],
+            ["next"],
+        ),
+    ],
+)
+def test_bring_douyin_after_sale_calendar_month_matches_target_month(
+    target: str,
+    month_sequence: list[list[tuple[int, int]]],
+    expected_calls: list[str],
+) -> None:
+    """
+    售后工作台日期面板也应按目标年月调节，并排除 placement-bottomLeft 这类布局容器。
+    """
+    exporter = WebExporter()
+    calls: list[str] = []
+
+    def _fake_months() -> list[tuple[int, int]]:
+        index = min(len(calls), len(month_sequence) - 1)
+        return month_sequence[index]
+
+    class _Driver:
+        def execute_script(self, script: str, direction: str) -> bool:
+            calls.append(direction)
+            return (
+                direction in {"prev", "next"}
+                and "isCalendarNav" in script
+                and "placement-" in script
+            )
+
+    exporter.driver = _Driver()  # type: ignore[assignment]
+    exporter._extract_douyin_after_sale_calendar_months = _fake_months  # type: ignore[method-assign]
+
+    assert exporter._bring_douyin_after_sale_calendar_month_into_view(target) is True
+    assert calls == expected_calls
+
+
 def test_after_sale_workbench_page_readiness_requires_export_action() -> None:
     """
     售后工作台不能只凭 URL 和部分筛选文案判定加载完成，必须等导出动作也出现。
