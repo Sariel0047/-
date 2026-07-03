@@ -85,6 +85,32 @@ class DataProcessor:
         "return_refund_order_count": 0,
         "return_refund_amount": 0.0,
     }
+    TMALL_SOLD_ORDER_SUMMARY_COLUMNS = [
+        "商品id",
+        "订单笔数",
+        "订单金额",
+        "仅退款笔数",
+        "仅退款金额",
+        "实际发出笔数",
+        "实际发出金额",
+        "退货退款笔数",
+        "退货退款金额",
+        "实际成交笔数",
+    ]
+    TMALL_ORDER_ID_COLUMN_CANDIDATES = ("主订单编号", "订单编号", "订单号")
+    TMALL_PRODUCT_ID_COLUMN_CANDIDATES = ("商品ID", "商品id", "商品Id", "宝贝ID", "宝贝id")
+    TMALL_QUANTITY_COLUMN_CANDIDATES = ("购买数量", "数量", "商品数量", "购买件数")
+    TMALL_AMOUNT_COLUMN_CANDIDATES = ("买家实付金额", "实付金额", "订单金额", "买家实付")
+    TMALL_ORDER_STATUS_COLUMN_CANDIDATES = ("订单状态",)
+    TMALL_LOGISTICS_COLUMN_CANDIDATES = ("物流单号", "运单号", "快递单号")
+    TMALL_FAILED_STATUS_VALUES = ("交易失败", "交易关闭")
+    TMALL_MONEY_SUMMARY_COLUMNS = (
+        "订单金额",
+        "仅退款金额",
+        "实际发出金额",
+        "退货退款金额",
+    )
+    TMALL_SUMMARY_BLANK_COLUMNS_AFTER_PRODUCT_ID = 2
 
     def __init__(self) -> None:
         self.raw_df: Optional[pd.DataFrame] = None
@@ -381,6 +407,77 @@ class DataProcessor:
                 return str(column)
         return None
 
+    def _find_first_normalized_column(
+        self,
+        df: pd.DataFrame,
+        candidates: tuple[str, ...],
+    ) -> Optional[str]:
+        """
+        在多个候选列名中按标准化列名查找真实列名。
+        """
+        for candidate in candidates:
+            column = self._find_normalized_column(df, candidate)
+            if column is not None:
+                return column
+        return None
+
+    def _require_first_normalized_column(
+        self,
+        df: pd.DataFrame,
+        candidates: tuple[str, ...],
+        usage: str,
+    ) -> str:
+        """
+        查找必要列，缺失时给出业务可读错误。
+        """
+        column = self._find_first_normalized_column(df, candidates)
+        if column is None:
+            raise ValueError(f"天猫订单表缺少{usage}列，候选列名：{'、'.join(candidates)}")
+        return column
+
+    @staticmethod
+    def _normalize_identifier(value: Any) -> str:
+        """
+        标准化订单号、商品 ID、物流单号等标识，避免 Excel 数值读入后带 .0。
+        """
+        if pd.isna(value):
+            return ""
+        if isinstance(value, int):
+            return str(value)
+        if isinstance(value, float) and value.is_integer():
+            return str(int(value))
+        text = str(value).strip()
+        if re.fullmatch(r"\d+\.0", text):
+            return text[:-2]
+        return text
+
+    @classmethod
+    def _normalize_identifier_list(
+        cls,
+        values: str | tuple[str, ...] | list[str] | None,
+    ) -> tuple[str, ...]:
+        """
+        标准化商品 ID 列表，支持逗号、中文逗号、分号、空白和换行。
+        """
+        if values is None:
+            return ()
+        if isinstance(values, (tuple, list)):
+            raw_items = [str(item or "") for item in values]
+        else:
+            raw_items = re.split(r"[,，;；\s]+", str(values or ""))
+
+        normalized: list[str] = []
+        for item in raw_items:
+            token = cls._normalize_identifier(item)
+            if token and token not in normalized:
+                normalized.append(token)
+        return tuple(normalized)
+
+    @classmethod
+    def _unique_identifier_count(cls, series: pd.Series) -> int:
+        values = [cls._normalize_identifier(value) for value in series]
+        return len({value for value in values if value})
+
     def _sum_numeric_column(self, df: pd.DataFrame, column_name: str) -> float:
         """
         汇总指定列的数值，兼容金额符号与千分位。
@@ -592,6 +689,152 @@ class DataProcessor:
         summary["categories"]["退货退款"]["sub_categories"]["已寄回"]["count"] = return_count
         summary["categories"]["退货退款"]["sub_categories"]["已寄回"]["amount"] = return_amount
         return summary
+
+    def summarize_tmall_sold_orders(
+        self,
+        input_path: Path,
+        product_ids: str | tuple[str, ...] | list[str] | None = None,
+    ) -> pd.DataFrame:
+        """
+        汇总天猫/淘宝【已卖出宝贝】宝贝销售明细报表。
+        """
+        target_file = self._resolve_excel_file(Path(input_path))
+        df = pd.read_excel(target_file)
+        df = self.clean_data(df)
+
+        if df.empty:
+            return pd.DataFrame(columns=self.TMALL_SOLD_ORDER_SUMMARY_COLUMNS)
+
+        order_id_column = self._require_first_normalized_column(
+            df,
+            self.TMALL_ORDER_ID_COLUMN_CANDIDATES,
+            "订单号",
+        )
+        product_id_column = self._require_first_normalized_column(
+            df,
+            self.TMALL_PRODUCT_ID_COLUMN_CANDIDATES,
+            "商品 ID",
+        )
+        quantity_column = self._require_first_normalized_column(
+            df,
+            self.TMALL_QUANTITY_COLUMN_CANDIDATES,
+            "购买数量",
+        )
+        amount_column = self._require_first_normalized_column(
+            df,
+            self.TMALL_AMOUNT_COLUMN_CANDIDATES,
+            "实付金额",
+        )
+        status_column = self._require_first_normalized_column(
+            df,
+            self.TMALL_ORDER_STATUS_COLUMN_CANDIDATES,
+            "订单状态",
+        )
+        logistics_column = self._require_first_normalized_column(
+            df,
+            self.TMALL_LOGISTICS_COLUMN_CANDIDATES,
+            "物流单号",
+        )
+
+        working = pd.DataFrame(
+            {
+                "_product_id": df[product_id_column].map(self._normalize_identifier),
+                "_order_id": df[order_id_column].map(self._normalize_identifier),
+                "_quantity": self._parse_amount(df[quantity_column]),
+                "_amount": self._parse_amount(df[amount_column]),
+                "_status": df[status_column].fillna("").astype(str).str.strip(),
+                "_logistics": df[logistics_column].map(self._normalize_identifier),
+            }
+        )
+        working = working.loc[working["_product_id"] != ""].copy()
+        requested_product_ids = self._normalize_identifier_list(product_ids)
+        if requested_product_ids:
+            requested_set = set(requested_product_ids)
+            working = working.loc[working["_product_id"].isin(requested_set)].copy()
+        if working.empty:
+            return pd.DataFrame(columns=self.TMALL_SOLD_ORDER_SUMMARY_COLUMNS)
+
+        rows: list[dict[str, Any]] = []
+        grouped_products = {
+            product_id: product_df
+            for product_id, product_df in working.groupby("_product_id", sort=False)
+        }
+        product_order = requested_product_ids if requested_product_ids else tuple(grouped_products.keys())
+        for product_id in product_order:
+            product_df = grouped_products.get(product_id)
+            if product_df is None:
+                continue
+            failed_mask = product_df["_status"].map(
+                lambda value: any(status in str(value) for status in self.TMALL_FAILED_STATUS_VALUES)
+            )
+            failed_df = product_df.loc[failed_mask]
+            only_refund_df = failed_df.loc[failed_df["_logistics"] == ""]
+            return_refund_df = failed_df.loc[failed_df["_logistics"] != ""]
+
+            order_count = int(len(product_df))
+            order_amount = round(float(product_df["_amount"].sum()), 2)
+            only_refund_count = int(len(only_refund_df))
+            only_refund_amount = round(float(only_refund_df["_amount"].sum()), 2)
+            return_refund_count = int(len(return_refund_df))
+            return_refund_amount = round(float(return_refund_df["_amount"].sum()), 2)
+
+            actual_sent_count = max(order_count - only_refund_count, 0)
+            actual_sent_amount = round(order_amount - only_refund_amount, 2)
+            actual_deal_count = max(order_count - only_refund_count - return_refund_count, 0)
+
+            rows.append(
+                {
+                    "商品id": product_id,
+                    "订单笔数": order_count,
+                    "订单金额": order_amount,
+                    "仅退款笔数": only_refund_count,
+                    "仅退款金额": only_refund_amount,
+                    "实际发出笔数": actual_sent_count,
+                    "实际发出金额": actual_sent_amount,
+                    "退货退款笔数": return_refund_count,
+                    "退货退款金额": return_refund_amount,
+                    "实际成交笔数": actual_deal_count,
+                }
+            )
+
+        return pd.DataFrame(rows, columns=self.TMALL_SOLD_ORDER_SUMMARY_COLUMNS)
+
+    def save_tmall_sold_order_summary(
+        self,
+        input_path: Path,
+        output_path: Path,
+        product_ids: str | tuple[str, ...] | list[str] | None = None,
+    ) -> Path:
+        """
+        生成天猫/淘宝【已卖出宝贝】订单汇总表。
+        """
+        summary_df = self.summarize_tmall_sold_orders(input_path, product_ids=product_ids)
+        output_file = Path(output_path)
+        output_file.parent.mkdir(parents=True, exist_ok=True)
+        summary_df.to_excel(output_file, index=False)
+        self._format_tmall_sold_order_summary(output_file)
+        return output_file
+
+    def _format_tmall_sold_order_summary(self, output_file: Path) -> None:
+        """
+        设置汇总表金额列格式，确保 Excel 中保留两位小数显示。
+        """
+        from openpyxl import load_workbook
+
+        workbook = load_workbook(output_file)
+        worksheet = workbook.active
+        if worksheet.max_column >= 2:
+            worksheet.insert_cols(2, amount=self.TMALL_SUMMARY_BLANK_COLUMNS_AFTER_PRODUCT_ID)
+        header_by_column = {
+            cell.column: str(cell.value or "").strip()
+            for cell in worksheet[1]
+        }
+        for column_index, header in header_by_column.items():
+            if header not in self.TMALL_MONEY_SUMMARY_COLUMNS:
+                continue
+            for row_index in range(2, worksheet.max_row + 1):
+                worksheet.cell(row=row_index, column=column_index).number_format = "0.00"
+        workbook.save(output_file)
 
     def save_processed_data(self, df: pd.DataFrame, output_path: Path) -> None:
         """

@@ -88,11 +88,13 @@ class AppGUI:
         self.platform_combo: ttk.Combobox | None = None
 
         self.web_exporter: WebExporter | None = None
+        self.order_export_window: object | None = None
         self.style: ttk.Style | None = None
 
         self._build_window()
         self._configure_styles()
         self._build_widgets()
+        self._build_menu()
         self._bind_events()
         self.platform_var.trace_add("write", self._on_platform_selection_changed)
 
@@ -111,6 +113,37 @@ class AppGUI:
         self.root.minsize(980, 720)
         self.root.resizable(True, True)
         self.root.configure(bg=self.BG)
+
+    def _build_menu(self) -> None:
+        """
+        构建主菜单。新功能通过独立窗口打开，不改变主界面布局。
+        """
+        menubar = tk.Menu(self.root)
+        feature_menu = tk.Menu(menubar, tearoff=0)
+        feature_menu.add_command(
+            label="已卖出宝贝订单导出",
+            command=self.open_order_export_window,
+        )
+        menubar.add_cascade(label="功能", menu=feature_menu)
+        self.root.config(menu=menubar)
+
+    def open_order_export_window(self) -> None:
+        """
+        打开独立的已卖出宝贝订单导出窗口。
+        """
+        from qianiu_auto_report.order_export_gui import OrderExportWindow
+
+        existing = self.order_export_window
+        if existing is not None:
+            try:
+                window = getattr(existing, "window", None)
+                if window is not None and bool(window.winfo_exists()):
+                    existing.focus()
+                    return
+            except Exception:
+                pass
+
+        self.order_export_window = OrderExportWindow(self.root)
 
     def _configure_styles(self) -> None:
         """

@@ -100,6 +100,8 @@ class ExportConfig:
 
     LOGIN_URL = ""
     EXPORT_URL = "https://myseller.taobao.com/home.htm/QnworkbenchHome/"
+    SOLD_ORDERS_URL = "https://myseller.taobao.com/home.htm/trade-platform/tp/sold"
+    SOLD_ORDERS_EXPORT_LIST_URL = "https://myseller.taobao.com/home.htm/trade-platform/tp/export-list"
     EXPORT_LIST_URL = "https://myseller.taobao.com/home.htm/trade-platform/refund-list/export-list"
     ACCOUNT_DETAILS_URL = "https://myseller.taobao.com/home.htm/whale-accountant/bill/account-details"
     BILL_SUMMARY_URL = (

@@ -126,8 +126,14 @@ class _FakeRoot:
     Tk root.after 的同步测试替身。
     """
 
+    def __init__(self) -> None:
+        self.configured_menu = None
+
     def after(self, delay_ms: int, callback: object, *args: object) -> None:
         callback(*args)  # type: ignore[misc]
+
+    def config(self, **kwargs: object) -> None:
+        self.configured_menu = kwargs.get("menu")
 
 
 class _FakeLaunchGUI:
@@ -242,6 +248,40 @@ def test_open_login_worker_only_launches_debug_browser(monkeypatch: object, tmp_
     assert fake.states == [
         (GUIState.BROWSER_READY, '浏览器已经打开，请在这个窗口里登录。登录完成后，点“我已登录，开始生成报表”。')
     ]
+
+
+def test_build_menu_adds_independent_order_export_entry(monkeypatch: object) -> None:
+    """
+    主界面应只通过菜单打开独立订单导出窗口，不改原运行设置板块。
+    """
+    AppGUI = _load_gui_with_dependency_stubs(monkeypatch)
+
+    created_commands: list[tuple[str, object]] = []
+
+    class _FakeMenu:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            self.items: list[tuple[str, object]] = []
+
+        def add_cascade(self, **kwargs: object) -> None:
+            self.items.append(("cascade", kwargs))
+
+        def add_command(self, **kwargs: object) -> None:
+            self.items.append(("command", kwargs))
+            created_commands.append((str(kwargs.get("label")), kwargs.get("command")))
+
+    fake = type("FakeGUI", (), {})()
+    fake.root = _FakeRoot()
+    fake.order_export_window = None
+    fake.open_order_export_window = lambda: None
+
+    monkeypatch.setattr("qianiu_auto_report.gui.tk.Menu", _FakeMenu)
+
+    AppGUI._build_menu(fake)
+
+    assert fake.root.configured_menu is not None
+    assert created_commands
+    assert created_commands[0][0] == "已卖出宝贝订单导出"
+    assert callable(created_commands[0][1])
 
 
 def test_auto_platform_context_keeps_default_url_for_managed_browser(monkeypatch: object) -> None:

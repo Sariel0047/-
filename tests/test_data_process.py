@@ -7,7 +7,7 @@ from __future__ import annotations
 from datetime import date
 from pathlib import Path
 
-from openpyxl import Workbook
+from openpyxl import Workbook, load_workbook
 import pandas as pd
 
 import qianiu_auto_report.data_process as data_process_module
@@ -354,3 +354,130 @@ def test_summarize_douyin_after_sale_orders_empty_uses_previous_date(
 
     assert summary["report_date"] == "2026-05-17"
     assert summary["douyin_refund_metrics"]["refund_total_order_count"] == 0
+
+
+def test_summarize_tmall_sold_orders_by_product_id_and_refund_type(tmp_path: Path) -> None:
+    """
+    已卖出宝贝导出的宝贝销售明细应按商品 ID 汇总明细行数、仅退款与退货退款。
+    """
+    input_file = tmp_path / "tmall_orders.xlsx"
+    pd.DataFrame(
+        {
+            "主订单编号": ["A001", "A001", "A002", "A003", "B001", "B002"],
+            "购买数量": [2, 3, 4, 5, 1, 2],
+            "订单状态": ["交易成功", "交易成功", "交易关闭", "交易失败", "交易成功", "交易失败"],
+            "买家实付金额": [60, 40, 30, 20, 80, 10],
+            "商品ID": ["P1", "P1", "P1", "P1", "P2", "P2"],
+            "物流单号": ["Y001", "Y001", "", "Y003", "Y101", ""],
+        }
+    ).to_excel(input_file, index=False)
+
+    summary_df = DataProcessor().summarize_tmall_sold_orders(input_file)
+
+    assert summary_df.columns.tolist() == [
+        "商品id",
+        "订单笔数",
+        "订单金额",
+        "仅退款笔数",
+        "仅退款金额",
+        "实际发出笔数",
+        "实际发出金额",
+        "退货退款笔数",
+        "退货退款金额",
+        "实际成交笔数",
+    ]
+
+    rows = {row["商品id"]: row for row in summary_df.to_dict("records")}
+    assert rows["P1"] == {
+        "商品id": "P1",
+        "订单笔数": 4,
+        "订单金额": 150.0,
+        "仅退款笔数": 1,
+        "仅退款金额": 30.0,
+        "实际发出笔数": 3,
+        "实际发出金额": 120.0,
+        "退货退款笔数": 1,
+        "退货退款金额": 20.0,
+        "实际成交笔数": 2,
+    }
+    assert rows["P2"] == {
+        "商品id": "P2",
+        "订单笔数": 2,
+        "订单金额": 90.0,
+        "仅退款笔数": 1,
+        "仅退款金额": 10.0,
+        "实际发出笔数": 1,
+        "实际发出金额": 80.0,
+        "退货退款笔数": 0,
+        "退货退款金额": 0.0,
+        "实际成交笔数": 1,
+    }
+
+
+def test_summarize_tmall_sold_orders_filters_to_requested_product_ids(tmp_path: Path) -> None:
+    """
+    导出的明细可能带出同订单其它商品，汇总时只保留用户查询的商品 ID。
+    """
+    input_file = tmp_path / "tmall_orders.xlsx"
+    pd.DataFrame(
+        {
+            "主订单编号": ["A001", "A001", "A002", "A003"],
+            "购买数量": [1, 1, 1, 1],
+            "订单状态": ["交易成功", "交易成功", "交易关闭", "交易成功"],
+            "买家实付金额": [60, 40, 30, 20],
+            "商品ID": ["P1", "EXTRA", "P2", "P3"],
+            "物流单号": ["Y001", "Y001", "", "Y003"],
+        }
+    ).to_excel(input_file, index=False)
+
+    summary_df = DataProcessor().summarize_tmall_sold_orders(
+        input_file,
+        product_ids="P2,P1",
+    )
+
+    assert summary_df["商品id"].tolist() == ["P2", "P1"]
+    assert "EXTRA" not in summary_df["商品id"].tolist()
+    assert "P3" not in summary_df["商品id"].tolist()
+
+
+def test_save_tmall_sold_order_summary_writes_excel(tmp_path: Path) -> None:
+    """
+    天猫订单汇总应能保存为新的 Excel 文件。
+    """
+    input_file = tmp_path / "tmall_orders.xlsx"
+    output_file = tmp_path / "tmall_summary.xlsx"
+    pd.DataFrame(
+        {
+            "主订单编号": ["A001"],
+            "购买数量": [1],
+            "订单状态": ["交易成功"],
+            "买家实付金额": [119],
+            "商品ID": ["906669497660"],
+            "物流单号": ["79015758079719"],
+        }
+    ).to_excel(input_file, index=False)
+
+    result = DataProcessor().save_tmall_sold_order_summary(input_file, output_file)
+
+    assert result == output_file
+    workbook = load_workbook(output_file)
+    worksheet = workbook.active
+    assert [worksheet.cell(row=1, column=index).value for index in range(1, 5)] == [
+        "商品id",
+        None,
+        None,
+        "订单笔数",
+    ]
+    assert worksheet.cell(row=2, column=1).value == "906669497660"
+    assert worksheet.cell(row=2, column=4).value == 1
+    assert worksheet.cell(row=2, column=5).value == 119
+
+    amount_headers = {"订单金额", "仅退款金额", "实际发出金额", "退货退款金额"}
+    amount_columns = [
+        cell.column
+        for cell in worksheet[1]
+        if cell.value in amount_headers
+    ]
+    assert amount_columns
+    for column_index in amount_columns:
+        assert worksheet.cell(row=2, column=column_index).number_format == "0.00"
