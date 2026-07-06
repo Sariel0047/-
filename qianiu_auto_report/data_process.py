@@ -20,6 +20,7 @@ class DataProcessor:
     """
 
     SUPPORTED_EXCEL_SUFFIXES = (".xlsx", ".xls", ".xlsm")
+    SUPPORTED_TABLE_SUFFIXES = SUPPORTED_EXCEL_SUFFIXES + (".csv",)
     DATE_COLUMN_CANDIDATES = (
         "退款完结时间",
         "退款成功时间",
@@ -111,6 +112,16 @@ class DataProcessor:
         "退货退款金额",
     )
     TMALL_SUMMARY_BLANK_COLUMNS_AFTER_PRODUCT_ID = 2
+    DOUYIN_ORDER_AMOUNT_COLUMN_CANDIDATES = (
+        "订单应付金额",
+        "买家实付金额",
+        "实付金额",
+        "订单金额",
+        "买家实付",
+    )
+    DOUYIN_ORDER_STATUS_COLUMN_CANDIDATES = ("订单状态",)
+    DOUYIN_SHIPMENT_TIME_COLUMN_CANDIDATES = ("发货时间", "物流单号", "运单号", "快递单号")
+    DOUYIN_FAILED_STATUS_VALUES = ("已关闭", "交易关闭", "交易失败")
 
     def __init__(self) -> None:
         self.raw_df: Optional[pd.DataFrame] = None
@@ -452,6 +463,16 @@ class DataProcessor:
         return text
 
     @classmethod
+    def _normalize_optional_identifier(cls, value: Any) -> str:
+        """
+        标准化可为空字段，把抖音 CSV 中的占位符视为空。
+        """
+        text = cls._normalize_identifier(value)
+        if text.strip().lower() in {"-", "无", "nan", "none", "null"}:
+            return ""
+        return text
+
+    @classmethod
     def _normalize_identifier_list(
         cls,
         values: str | tuple[str, ...] | list[str] | None,
@@ -492,6 +513,21 @@ class DataProcessor:
         汇总指定列的订单数。
         """
         return int(round(self._sum_numeric_column(df=df, column_name=column_name)))
+
+    def _read_table_file(self, input_path: Path) -> pd.DataFrame:
+        """
+        读取 Excel/CSV 表格，CSV 优先按 UTF-8 BOM 解析。
+        """
+        target_file = Path(input_path)
+        suffix = target_file.suffix.lower()
+        if suffix == ".csv":
+            for encoding in ("utf-8-sig", "utf-8", "gb18030"):
+                try:
+                    return pd.read_csv(target_file, encoding=encoding, dtype=str)
+                except UnicodeDecodeError:
+                    continue
+            return pd.read_csv(target_file, dtype=str)
+        return pd.read_excel(target_file)
 
     def summarize_douyin_refund_analysis(self, input_path: Path) -> dict[str, Any]:
         """
@@ -617,8 +653,10 @@ class DataProcessor:
         """
         汇总抖店“售后工作台 -> 导出”的售后单。
         """
-        target_file = self._resolve_excel_file(Path(input_path))
-        df = pd.read_excel(target_file)
+        target_file = Path(input_path)
+        if target_file.suffix.lower() not in self.SUPPORTED_TABLE_SUFFIXES:
+            target_file = self._resolve_excel_file(target_file)
+        df = self._read_table_file(target_file)
         df.columns = [str(column).strip() for column in df.columns]
 
         type_column = self._find_normalized_column(df, self.DOUYIN_AFTER_SALE_TYPE_COLUMN)
@@ -698,8 +736,10 @@ class DataProcessor:
         """
         汇总天猫/淘宝【已卖出宝贝】宝贝销售明细报表。
         """
-        target_file = self._resolve_excel_file(Path(input_path))
-        df = pd.read_excel(target_file)
+        target_file = Path(input_path)
+        if target_file.suffix.lower() not in self.SUPPORTED_TABLE_SUFFIXES:
+            target_file = self._resolve_excel_file(target_file)
+        df = self._read_table_file(target_file)
         df = self.clean_data(df)
 
         if df.empty:
@@ -799,6 +839,121 @@ class DataProcessor:
 
         return pd.DataFrame(rows, columns=self.TMALL_SOLD_ORDER_SUMMARY_COLUMNS)
 
+    def summarize_douyin_order_details(
+        self,
+        input_path: Path,
+        product_ids: str | tuple[str, ...] | list[str] | None = None,
+    ) -> pd.DataFrame:
+        """
+        汇总抖音订单明细离线导出表。
+        """
+        target_file = Path(input_path)
+        if target_file.suffix.lower() not in self.SUPPORTED_TABLE_SUFFIXES:
+            target_file = self._resolve_excel_file(target_file)
+        df = self._read_table_file(target_file)
+        df = self.clean_data(df)
+
+        if df.empty:
+            return pd.DataFrame(columns=self.TMALL_SOLD_ORDER_SUMMARY_COLUMNS)
+
+        product_id_column = self._require_first_normalized_column(
+            df,
+            self.TMALL_PRODUCT_ID_COLUMN_CANDIDATES,
+            "商品 ID",
+        )
+        quantity_column = self._require_first_normalized_column(
+            df,
+            self.TMALL_QUANTITY_COLUMN_CANDIDATES,
+            "购买数量",
+        )
+        amount_column = self._require_first_normalized_column(
+            df,
+            self.DOUYIN_ORDER_AMOUNT_COLUMN_CANDIDATES,
+            "实付金额",
+        )
+        status_column = self._require_first_normalized_column(
+            df,
+            self.DOUYIN_ORDER_STATUS_COLUMN_CANDIDATES,
+            "订单状态",
+        )
+        shipment_time_column = self._require_first_normalized_column(
+            df,
+            self.DOUYIN_SHIPMENT_TIME_COLUMN_CANDIDATES,
+            "发货时间",
+        )
+
+        working = pd.DataFrame(
+            {
+                "_product_id": df[product_id_column].map(self._normalize_identifier),
+                "_quantity": self._parse_amount(df[quantity_column]),
+                "_amount": self._parse_amount(df[amount_column]),
+                "_status": df[status_column].fillna("").astype(str).str.strip(),
+                "_shipment_time": df[shipment_time_column].map(self._normalize_optional_identifier),
+            }
+        )
+        working = working.loc[working["_product_id"] != ""].copy()
+        requested_product_ids = self._normalize_identifier_list(product_ids)
+        if requested_product_ids:
+            requested_set = set(requested_product_ids)
+            working = working.loc[working["_product_id"].isin(requested_set)].copy()
+        if working.empty:
+            return pd.DataFrame(columns=self.TMALL_SOLD_ORDER_SUMMARY_COLUMNS)
+
+        rows: list[dict[str, Any]] = []
+        grouped_products = {
+            product_id: product_df
+            for product_id, product_df in working.groupby("_product_id", sort=False)
+        }
+        if requested_product_ids:
+            product_order = requested_product_ids
+        else:
+            product_order = tuple(
+                product_id
+                for product_id, _product_df in sorted(
+                    grouped_products.items(),
+                    key=lambda item: float(item[1]["_quantity"].sum()),
+                    reverse=True,
+                )
+            )
+        for product_id in product_order:
+            product_df = grouped_products.get(product_id)
+            if product_df is None:
+                continue
+            refunded_mask = product_df["_status"].map(
+                lambda value: any(status in str(value) for status in self.DOUYIN_FAILED_STATUS_VALUES)
+            )
+            refunded_df = product_df.loc[refunded_mask]
+            only_refund_df = refunded_df.loc[refunded_df["_shipment_time"] == ""]
+            return_refund_df = refunded_df.loc[refunded_df["_shipment_time"] != ""]
+
+            order_count = int(round(float(product_df["_quantity"].sum())))
+            order_amount = round(float(product_df["_amount"].sum()), 2)
+            only_refund_count = int(round(float(only_refund_df["_quantity"].sum())))
+            only_refund_amount = round(float(only_refund_df["_amount"].sum()), 2)
+            return_refund_count = int(round(float(return_refund_df["_quantity"].sum())))
+            return_refund_amount = round(float(return_refund_df["_amount"].sum()), 2)
+
+            actual_sent_count = max(order_count - only_refund_count, 0)
+            actual_sent_amount = round(order_amount - only_refund_amount, 2)
+            actual_deal_count = max(order_count - only_refund_count - return_refund_count, 0)
+
+            rows.append(
+                {
+                    "商品id": product_id,
+                    "订单笔数": order_count,
+                    "订单金额": order_amount,
+                    "仅退款笔数": only_refund_count,
+                    "仅退款金额": only_refund_amount,
+                    "实际发出笔数": actual_sent_count,
+                    "实际发出金额": actual_sent_amount,
+                    "退货退款笔数": return_refund_count,
+                    "退货退款金额": return_refund_amount,
+                    "实际成交笔数": actual_deal_count,
+                }
+            )
+
+        return pd.DataFrame(rows, columns=self.TMALL_SOLD_ORDER_SUMMARY_COLUMNS)
+
     def save_tmall_sold_order_summary(
         self,
         input_path: Path,
@@ -809,6 +964,22 @@ class DataProcessor:
         生成天猫/淘宝【已卖出宝贝】订单汇总表。
         """
         summary_df = self.summarize_tmall_sold_orders(input_path, product_ids=product_ids)
+        output_file = Path(output_path)
+        output_file.parent.mkdir(parents=True, exist_ok=True)
+        summary_df.to_excel(output_file, index=False)
+        self._format_tmall_sold_order_summary(output_file)
+        return output_file
+
+    def save_douyin_order_detail_summary(
+        self,
+        input_path: Path,
+        output_path: Path,
+        product_ids: str | tuple[str, ...] | list[str] | None = None,
+    ) -> Path:
+        """
+        生成抖音订单明细离线汇总表。
+        """
+        summary_df = self.summarize_douyin_order_details(input_path, product_ids=product_ids)
         output_file = Path(output_path)
         output_file.parent.mkdir(parents=True, exist_ok=True)
         summary_df.to_excel(output_file, index=False)
@@ -829,6 +1000,24 @@ class DataProcessor:
             cell.column: str(cell.value or "").strip()
             for cell in worksheet[1]
         }
+        for column_index in range(1, worksheet.max_column + 1):
+            header = header_by_column.get(column_index, "")
+            column_letter = worksheet.cell(row=1, column=column_index).column_letter
+            values = [
+                worksheet.cell(row=row_index, column=column_index).value
+                for row_index in range(1, worksheet.max_row + 1)
+            ]
+            max_text_length = max((len(str(value)) for value in values if value is not None), default=0)
+            if header == "商品id":
+                width = max(max_text_length + 2, 22)
+            elif header in self.TMALL_MONEY_SUMMARY_COLUMNS:
+                width = max(max_text_length + 4, 14)
+            elif header:
+                width = max(max_text_length + 2, 12)
+            else:
+                width = 10
+            worksheet.column_dimensions[column_letter].width = min(width, 28)
+
         for column_index, header in header_by_column.items():
             if header not in self.TMALL_MONEY_SUMMARY_COLUMNS:
                 continue

@@ -481,3 +481,131 @@ def test_save_tmall_sold_order_summary_writes_excel(tmp_path: Path) -> None:
     assert amount_columns
     for column_index in amount_columns:
         assert worksheet.cell(row=2, column=column_index).number_format == "0.00"
+
+
+def test_summarize_douyin_order_details_by_product_id(tmp_path: Path) -> None:
+    """
+    抖音订单明细离线表应按商品 ID 汇总整份文件，并按订单笔数倒序。
+    """
+    input_file = tmp_path / "douyin_orders.xlsx"
+    pd.DataFrame(
+        {
+            "主订单编号": ["A001", "A002", "A003", "A004", "B001"],
+            "购买数量": [2, 1, 3, 4, 5],
+            "订单状态": ["交易成功", "交易关闭", "交易关闭", "交易成功", "交易关闭"],
+            "买家实付金额": [200, 80, 150, 120, 300],
+            "退款状态": ["没有申请退款", "退款成功", "退款成功", "没有申请退款", "退款成功"],
+            "退款金额": ["无退款申请", 1, 1, "无退款申请", 1],
+            "商品ID": ["P1", "P1", "P1", "P1", "P2"],
+            "发货时间": [
+                "2026-06-16 10:00:00",
+                "",
+                "2026-06-16 11:00:00",
+                "2026-06-16 12:00:00",
+                "",
+            ],
+        }
+    ).to_excel(input_file, index=False)
+
+    summary_df = DataProcessor().summarize_douyin_order_details(input_file)
+
+    assert summary_df["商品id"].tolist() == ["P1", "P2"]
+    rows = {row["商品id"]: row for row in summary_df.to_dict("records")}
+    assert rows["P1"] == {
+        "商品id": "P1",
+        "订单笔数": 10,
+        "订单金额": 550.0,
+        "仅退款笔数": 1,
+        "仅退款金额": 80.0,
+        "实际发出笔数": 9,
+        "实际发出金额": 470.0,
+        "退货退款笔数": 3,
+        "退货退款金额": 150.0,
+        "实际成交笔数": 6,
+    }
+    assert rows["P2"]["订单笔数"] == 5
+    assert rows["P2"]["仅退款金额"] == 300.0
+
+
+def test_summarize_douyin_order_details_accepts_standard_csv(tmp_path: Path) -> None:
+    """
+    抖音标准报表 CSV 应按订单状态、订单应付金额和发货时间汇总。
+    """
+    input_file = tmp_path / "douyin_orders.csv"
+    pd.DataFrame(
+        {
+            "主订单编号": ["A001", "A002", "A003"],
+            "商品数量": [1, 2, 3],
+            "订单应付金额": [100, 200, 300],
+            "商品ID": ["P1", "P1", "P2"],
+            "订单状态": ["已关闭", "已关闭", "已完成"],
+            "售后状态": ["退款成功", "退款成功", "-"],
+            "发货时间": ["-", "2026-06-16 12:00:00", "2026-06-17 12:00:00"],
+        }
+    ).to_csv(input_file, index=False, encoding="utf-8-sig")
+
+    summary_df = DataProcessor().summarize_douyin_order_details(input_file)
+
+    rows = {row["商品id"]: row for row in summary_df.to_dict("records")}
+    assert rows["P2"]["订单笔数"] == 3
+    assert rows["P1"]["订单笔数"] == 3
+    assert rows["P1"]["仅退款笔数"] == 1
+    assert rows["P1"]["仅退款金额"] == 100.0
+    assert rows["P1"]["退货退款笔数"] == 2
+    assert rows["P1"]["退货退款金额"] == 200.0
+
+
+def test_summarize_douyin_order_details_uses_order_status_not_after_sale_status(
+    tmp_path: Path,
+) -> None:
+    """
+    抖音离线表应只用订单状态判断退款，售后状态不能单独把已完成订单算成退款。
+    """
+    input_file = tmp_path / "douyin_orders.csv"
+    pd.DataFrame(
+        {
+            "商品数量": [1, 2, 3],
+            "订单应付金额": [10.55, 20.25, 30.75],
+            "商品ID": ["P1", "P1", "P1"],
+            "订单状态": ["已完成", "已关闭", "已关闭"],
+            "售后状态": ["退款成功", "-", "-"],
+            "退款金额": [999, 999, 999],
+            "发货时间": ["", "", "2026-06-16 12:00:00"],
+        }
+    ).to_csv(input_file, index=False, encoding="utf-8-sig")
+
+    summary_df = DataProcessor().summarize_douyin_order_details(input_file)
+
+    row = summary_df.to_dict("records")[0]
+    assert row["订单笔数"] == 6
+    assert row["订单金额"] == 61.55
+    assert row["仅退款笔数"] == 2
+    assert row["仅退款金额"] == 20.25
+    assert row["退货退款笔数"] == 3
+    assert row["退货退款金额"] == 30.75
+
+
+def test_save_douyin_order_detail_summary_sets_amount_column_width(tmp_path: Path) -> None:
+    """
+    抖音汇总表金额列应有足够列宽，避免 WPS/Excel 显示为 ######。
+    """
+    input_file = tmp_path / "douyin_orders.csv"
+    output_file = tmp_path / "douyin_summary.xlsx"
+    pd.DataFrame(
+        {
+            "主订单编号": ["A001"],
+            "商品数量": [10168],
+            "订单应付金额": [1288888.88],
+            "商品ID": ["3764109164402573517"],
+            "订单状态": ["已完成"],
+            "售后状态": ["-"],
+            "发货时间": ["2026-06-16 12:00:00"],
+        }
+    ).to_csv(input_file, index=False, encoding="utf-8-sig")
+
+    DataProcessor().save_douyin_order_detail_summary(input_file, output_file)
+
+    worksheet = load_workbook(output_file).active
+    amount_column = next(cell.column_letter for cell in worksheet[1] if cell.value == "订单金额")
+    assert worksheet.column_dimensions[amount_column].width >= 14
+    assert worksheet[f"{amount_column}2"].number_format == "0.00"

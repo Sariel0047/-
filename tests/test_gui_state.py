@@ -272,16 +272,18 @@ def test_build_menu_adds_independent_order_export_entry(monkeypatch: object) -> 
     fake = type("FakeGUI", (), {})()
     fake.root = _FakeRoot()
     fake.order_export_window = None
+    fake.douyin_order_file_window = None
     fake.open_order_export_window = lambda: None
+    fake.open_douyin_order_file_window = lambda: None
 
     monkeypatch.setattr("qianiu_auto_report.gui.tk.Menu", _FakeMenu)
 
     AppGUI._build_menu(fake)
 
     assert fake.root.configured_menu is not None
-    assert created_commands
-    assert created_commands[0][0] == "已卖出宝贝订单导出"
-    assert callable(created_commands[0][1])
+    labels = [label for label, _command in created_commands]
+    assert labels == ["已卖出宝贝订单导出", "抖音订单表处理"]
+    assert all(callable(command) for _label, command in created_commands)
 
 
 def test_auto_platform_context_keeps_default_url_for_managed_browser(monkeypatch: object) -> None:

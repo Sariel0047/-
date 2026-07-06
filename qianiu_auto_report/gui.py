@@ -89,6 +89,7 @@ class AppGUI:
 
         self.web_exporter: WebExporter | None = None
         self.order_export_window: object | None = None
+        self.douyin_order_file_window: object | None = None
         self.style: ttk.Style | None = None
 
         self._build_window()
@@ -124,6 +125,10 @@ class AppGUI:
             label="已卖出宝贝订单导出",
             command=self.open_order_export_window,
         )
+        feature_menu.add_command(
+            label="抖音订单表处理",
+            command=self.open_douyin_order_file_window,
+        )
         menubar.add_cascade(label="功能", menu=feature_menu)
         self.root.config(menu=menubar)
 
@@ -144,6 +149,24 @@ class AppGUI:
                 pass
 
         self.order_export_window = OrderExportWindow(self.root)
+
+    def open_douyin_order_file_window(self) -> None:
+        """
+        打开独立的抖音订单表处理窗口。
+        """
+        from qianiu_auto_report.douyin_order_file_gui import DouyinOrderFileWindow
+
+        existing = self.douyin_order_file_window
+        if existing is not None:
+            try:
+                window = getattr(existing, "window", None)
+                if window is not None and bool(window.winfo_exists()):
+                    existing.focus()
+                    return
+            except Exception:
+                pass
+
+        self.douyin_order_file_window = DouyinOrderFileWindow(self.root)
 
     def _configure_styles(self) -> None:
         """
