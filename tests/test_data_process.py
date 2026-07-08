@@ -494,7 +494,7 @@ def test_summarize_douyin_order_details_by_product_id(tmp_path: Path) -> None:
             "购买数量": [2, 1, 3, 4, 5],
             "订单状态": ["交易成功", "交易关闭", "交易关闭", "交易成功", "交易关闭"],
             "买家实付金额": [200, 80, 150, 120, 300],
-            "退款状态": ["没有申请退款", "退款成功", "退款成功", "没有申请退款", "退款成功"],
+            "售后状态": ["-", "退款成功", "退款成功", "-", "退款成功"],
             "退款金额": ["无退款申请", 1, 1, "无退款申请", 1],
             "商品ID": ["P1", "P1", "P1", "P1", "P2"],
             "发货时间": [
@@ -555,11 +555,11 @@ def test_summarize_douyin_order_details_accepts_standard_csv(tmp_path: Path) -> 
     assert rows["P1"]["退货退款金额"] == 200.0
 
 
-def test_summarize_douyin_order_details_uses_order_status_not_after_sale_status(
+def test_summarize_douyin_order_details_uses_after_sale_status_not_order_status(
     tmp_path: Path,
 ) -> None:
     """
-    抖音离线表应只用订单状态判断退款，售后状态不能单独把已完成订单算成退款。
+    抖音离线表应按售后状态判断退款，订单状态不能单独把已关闭订单算成退款。
     """
     input_file = tmp_path / "douyin_orders.csv"
     pd.DataFrame(
@@ -568,7 +568,7 @@ def test_summarize_douyin_order_details_uses_order_status_not_after_sale_status(
             "订单应付金额": [10.55, 20.25, 30.75],
             "商品ID": ["P1", "P1", "P1"],
             "订单状态": ["已完成", "已关闭", "已关闭"],
-            "售后状态": ["退款成功", "-", "-"],
+            "售后状态": ["退款成功", "-", "同意退款，退款成功"],
             "退款金额": [999, 999, 999],
             "发货时间": ["", "", "2026-06-16 12:00:00"],
         }
@@ -579,8 +579,8 @@ def test_summarize_douyin_order_details_uses_order_status_not_after_sale_status(
     row = summary_df.to_dict("records")[0]
     assert row["订单笔数"] == 6
     assert row["订单金额"] == 61.55
-    assert row["仅退款笔数"] == 2
-    assert row["仅退款金额"] == 20.25
+    assert row["仅退款笔数"] == 1
+    assert row["仅退款金额"] == 10.55
     assert row["退货退款笔数"] == 3
     assert row["退货退款金额"] == 30.75
 
