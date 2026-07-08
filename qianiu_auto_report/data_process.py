@@ -871,11 +871,9 @@ class DataProcessor:
             self.DOUYIN_ORDER_AMOUNT_COLUMN_CANDIDATES,
             "实付金额",
         )
-        status_column = self._require_first_normalized_column(
-            df,
-            self.DOUYIN_ORDER_STATUS_COLUMN_CANDIDATES,
-            "订单状态",
-        )
+        after_sale_status_column = self._find_first_normalized_column(df, ("售后状态",))
+        if after_sale_status_column is None:
+            raise ValueError("抖音订单明细缺少售后状态列，候选列名：售后状态")
         shipment_time_column = self._require_first_normalized_column(
             df,
             self.DOUYIN_SHIPMENT_TIME_COLUMN_CANDIDATES,
@@ -887,7 +885,7 @@ class DataProcessor:
                 "_product_id": df[product_id_column].map(self._normalize_identifier),
                 "_quantity": self._parse_amount(df[quantity_column]),
                 "_amount": self._parse_amount(df[amount_column]),
-                "_status": df[status_column].fillna("").astype(str).str.strip(),
+                "_after_sale_status": df[after_sale_status_column].fillna("").astype(str).str.strip(),
                 "_shipment_time": df[shipment_time_column].map(self._normalize_optional_identifier),
             }
         )
@@ -919,9 +917,7 @@ class DataProcessor:
             product_df = grouped_products.get(product_id)
             if product_df is None:
                 continue
-            refunded_mask = product_df["_status"].map(
-                lambda value: any(status in str(value) for status in self.DOUYIN_FAILED_STATUS_VALUES)
-            )
+            refunded_mask = product_df["_after_sale_status"].str.contains("退款成功", na=False)
             refunded_df = product_df.loc[refunded_mask]
             only_refund_df = refunded_df.loc[refunded_df["_shipment_time"] == ""]
             return_refund_df = refunded_df.loc[refunded_df["_shipment_time"] != ""]
