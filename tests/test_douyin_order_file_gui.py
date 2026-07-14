@@ -32,3 +32,20 @@ def test_get_request_accepts_local_table_file(tmp_path: Path) -> None:
     assert request == {
         "input_file": input_file,
     }
+
+
+def test_get_request_accepts_wps_et_file(tmp_path: Path) -> None:
+    """
+    抖音离线窗口应接受 WPS 表格 .et 文件。
+    """
+    input_file = tmp_path / "douyin.et"
+    input_file.write_bytes(b"placeholder")
+
+    fake = type("FakeWindow", (), {})()
+    fake.input_file_var = _FakeVar(str(input_file))
+
+    request = DouyinOrderFileWindow._get_request(fake)
+
+    assert request == {
+        "input_file": input_file,
+    }

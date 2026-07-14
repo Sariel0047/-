@@ -260,7 +260,7 @@ class DouyinOrderFileWindow:
         if not input_file.exists() or not input_file.is_file():
             raise ValueError("请先选择一份抖音订单明细表。")
         if input_file.suffix.lower() not in DataProcessor.SUPPORTED_TABLE_SUFFIXES:
-            raise ValueError("请选择表格文件（.csv/.xlsx/.xls/.xlsm）。")
+            raise ValueError("请选择表格文件（.csv/.xlsx/.xls/.xlsm/.et）。")
 
         return {
             "input_file": input_file,
@@ -273,9 +273,9 @@ class DouyinOrderFileWindow:
             parent=self.window,
             title="选择抖音订单明细表",
             filetypes=(
-                ("表格文件", "*.csv *.xlsx *.xls *.xlsm"),
+                ("表格文件", "*.csv *.xlsx *.xls *.xlsm *.et"),
                 ("CSV 文件", "*.csv"),
-                ("Excel 文件", "*.xlsx *.xls *.xlsm"),
+                ("Excel/WPS 文件", "*.xlsx *.xls *.xlsm *.et"),
                 ("所有文件", "*.*"),
             ),
         )

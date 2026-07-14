@@ -19,7 +19,7 @@ class DataProcessor:
     数据清洗与整理处理器。
     """
 
-    SUPPORTED_EXCEL_SUFFIXES = (".xlsx", ".xls", ".xlsm")
+    SUPPORTED_EXCEL_SUFFIXES = (".xlsx", ".xls", ".xlsm", ".et")
     SUPPORTED_TABLE_SUFFIXES = SUPPORTED_EXCEL_SUFFIXES + (".csv",)
     DATE_COLUMN_CANDIDATES = (
         "退款完结时间",
@@ -216,7 +216,7 @@ class DataProcessor:
         """
         target_file = self._resolve_excel_file(Path(file_path))
         self.latest_file_path = target_file
-        df = pd.read_excel(target_file)
+        df = self._read_excel_file(target_file)
         self.raw_df = df
         return df
 
@@ -527,7 +527,32 @@ class DataProcessor:
                 except UnicodeDecodeError:
                     continue
             return pd.read_csv(target_file, dtype=str)
-        return pd.read_excel(target_file)
+        return self._read_excel_file(target_file, dtype=str)
+
+    @classmethod
+    def _excel_engine_for_suffix(cls, suffix: str) -> str:
+        """
+        根据后缀选择 Excel 读取引擎。
+        """
+        normalized_suffix = suffix.lower()
+        if normalized_suffix in {".xls", ".et"}:
+            return "xlrd"
+        return "openpyxl"
+
+    def _read_excel_file(self, input_path: Path, **kwargs: Any) -> pd.DataFrame:
+        """
+        读取 Excel/WPS 表格文件。
+        """
+        target_file = Path(input_path)
+        engine = self._excel_engine_for_suffix(target_file.suffix)
+        try:
+            return pd.read_excel(target_file, engine=engine, **kwargs)
+        except ImportError as exc:
+            if engine == "xlrd":
+                raise ImportError(
+                    "读取 .xls/.et 表格需要安装 xlrd，请安装表格兼容组件，或另存为 .xlsx 后再试。"
+                ) from exc
+            raise
 
     def summarize_douyin_refund_analysis(self, input_path: Path) -> dict[str, Any]:
         """
@@ -541,7 +566,7 @@ class DataProcessor:
                 f"未找到抖音退款分析工作表【{self.DOUYIN_REFUND_DETAIL_SHEET_NAME}】，当前工作表：{sheets}"
             )
 
-        df = pd.read_excel(target_file, sheet_name=self.DOUYIN_REFUND_DETAIL_SHEET_NAME)
+        df = self._read_excel_file(target_file, sheet_name=self.DOUYIN_REFUND_DETAIL_SHEET_NAME)
         df.columns = [str(column).strip() for column in df.columns]
         report_date = self._extract_report_date_from_title(target_file.stem)
         date_column = self._find_normalized_column(df, "日期")

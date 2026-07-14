@@ -4679,7 +4679,7 @@ class WebExporter:
                 previous_snapshot=snapshot,
                 temp_suffixes=(".crdownload", ".part", ".tmp"),
                 file_filter=lambda file_path: (
-                    file_path.suffix.lower() in {".xlsx", ".xls", ".xlsm"}
+                    file_path.suffix.lower() in {".xlsx", ".xls", ".xlsm", ".et"}
                     and not file_path.name.startswith("~$")
                     and ("退款分析" in file_path.name or "refund" in file_path.name.lower())
                 ),

@@ -217,6 +217,7 @@ def test_gui_state_friendly_error_messages_hide_technical_terms() -> None:
     assert friendly_error_message("无法自动判定平台。请显式选择...") == '我没看懂你现在在哪个平台，请手动选择“淘宝”或“抖音”。'
     assert friendly_error_message("附着已打开浏览器失败：调试端口不可连接。") == "我没找到可用的浏览器，我再试一次。"
     assert friendly_error_message("TimeoutException: 下载超时，未检测到完整文件") == "我这次没等到文件准备好，你可以点“重新打开工作浏览器”再试一次。"
+    assert friendly_error_message("ModuleNotFoundError: No module named 'xlrd'") == "这份表格文件暂时无法读取，请确认已安装表格兼容组件，或另存为 .xlsx 后再试。"
 
 
 def test_set_ui_state_accepts_root_after_style_status_argument(monkeypatch: object) -> None:

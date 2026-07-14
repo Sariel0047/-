@@ -92,7 +92,7 @@ def validate_file_exists(file_path: Path) -> bool:
 
 def get_latest_file(
     directory: Path,
-    suffixes: tuple[str, ...] = (".xlsx", ".xls", ".xlsm"),
+    suffixes: tuple[str, ...] = (".xlsx", ".xls", ".xlsm", ".et"),
     ignore_prefixes: tuple[str, ...] = ("~$",),
     recursive: bool = False,
 ) -> Path:

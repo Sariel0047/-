@@ -120,6 +120,15 @@ def friendly_error_message(message: str) -> str:
         return '我没看懂你现在在哪个平台，请手动选择“淘宝”或“抖音”。'
 
     if (
+        "xlrd" in normalized
+        or "openpyxl" in normalized
+        or "excel file format" in normalized
+        or "unsupported format" in normalized
+        or "表格兼容组件" in text
+    ):
+        return "这份表格文件暂时无法读取，请确认已安装表格兼容组件，或另存为 .xlsx 后再试。"
+
+    if (
         "调试端口" in text
         or "附着已打开浏览器失败" in text
         or "打开登录页失败" in text

@@ -129,6 +129,43 @@ def test_process_filters_by_explicit_report_date(tmp_path: Path) -> None:
     assert summary["categories"]["未发货仅退款"]["count"] == 1
 
 
+def test_supported_table_suffixes_include_wps_et() -> None:
+    """
+    手动导入和浏览器下载处理都应接受 WPS 表格 .et 文件。
+    """
+    assert ".et" in DataProcessor.SUPPORTED_TABLE_SUFFIXES
+
+
+def test_read_table_file_uses_xlrd_for_legacy_excel_and_wps_et(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """
+    .xls 和 WPS .et 应走 xlrd 引擎，避免 pandas 默认缺引擎导致读取失败。
+    """
+    calls: list[tuple[Path, str | None, object]] = []
+
+    def fake_read_excel(path: Path, *args: object, **kwargs: object) -> pd.DataFrame:
+        calls.append((Path(path), kwargs.get("engine"), kwargs.get("dtype")))
+        return pd.DataFrame({"商品ID": ["P1"]})
+
+    monkeypatch.setattr(pd, "read_excel", fake_read_excel)
+
+    processor = DataProcessor()
+    xls_file = tmp_path / "orders.xls"
+    et_file = tmp_path / "orders.et"
+    xls_file.write_bytes(b"placeholder")
+    et_file.write_bytes(b"placeholder")
+
+    processor._read_table_file(xls_file)
+    processor._read_table_file(et_file)
+
+    assert calls == [
+        (xls_file, "xlrd", str),
+        (et_file, "xlrd", str),
+    ]
+
+
 def test_summarize_douyin_refund_analysis_detail_by_stage_columns(tmp_path) -> None:
     """
     抖音罗盘退款分析明细应按“本店数据”阶段列求和。
