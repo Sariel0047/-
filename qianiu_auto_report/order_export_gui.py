@@ -19,7 +19,7 @@ from qianiu_auto_report.browser_runtime import summarize_technical_error
 from qianiu_auto_report.config import ExportConfig
 from qianiu_auto_report.data_process import DataProcessor
 from qianiu_auto_report.gui_support import format_output_dir_label
-from qianiu_auto_report.gui_state import friendly_error_message
+from qianiu_auto_report.gui_state import friendly_offline_error_message
 
 
 class OrderProcessingRequest(TypedDict):
@@ -364,7 +364,7 @@ class OrderExportWindow:
             self.window.after(0, self.append_log, f"天猫订单汇总表已生成：{output_file.name}", "success")
         except Exception:
             error_text = traceback.format_exc().strip()
-            friendly = friendly_error_message(error_text)
+            friendly = friendly_offline_error_message(error_text)
             self.window.after(0, self.status_var.set, friendly)
             self.window.after(0, self.append_log, friendly, "error")
             technical = summarize_technical_error(error_text)

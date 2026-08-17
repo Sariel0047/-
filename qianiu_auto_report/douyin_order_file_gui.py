@@ -18,7 +18,7 @@ from qianiu_auto_report.browser_runtime import summarize_technical_error
 from qianiu_auto_report.config import ExportConfig
 from qianiu_auto_report.data_process import DataProcessor
 from qianiu_auto_report.gui_support import format_output_dir_label
-from qianiu_auto_report.gui_state import friendly_error_message
+from qianiu_auto_report.gui_state import friendly_offline_error_message
 
 
 class DouyinOrderFileWindow:
@@ -34,6 +34,7 @@ class DouyinOrderFileWindow:
     PRIMARY = "#2563EB"
     SUCCESS = "#0F766E"
     ERROR = "#B91C1C"
+    LOG_HEIGHT = 6
 
     def __init__(self, parent: tk.Tk | tk.Toplevel) -> None:
         self.parent = parent
@@ -59,8 +60,8 @@ class DouyinOrderFileWindow:
 
     def _build_window(self) -> None:
         self.window.title("抖音订单表处理")
-        self.window.geometry("820x620")
-        self.window.minsize(760, 560)
+        self.window.geometry("820x650")
+        self.window.minsize(760, 640)
         self.window.resizable(True, True)
         self.window.configure(bg=self.BG)
         self.window.transient(self.parent)
@@ -219,7 +220,7 @@ class DouyinOrderFileWindow:
         ).grid(row=0, column=0, sticky="w")
         self.log_text = scrolledtext.ScrolledText(
             log_card,
-            height=11,
+            height=self.LOG_HEIGHT,
             wrap=tk.WORD,
             state="disabled",
             bg="#FFFFFF",
@@ -311,7 +312,7 @@ class DouyinOrderFileWindow:
             self.window.after(0, self.append_log, f"抖音订单汇总表已生成：{output_file.name}", "success")
         except Exception:
             error_text = traceback.format_exc().strip()
-            friendly = friendly_error_message(error_text)
+            friendly = friendly_offline_error_message(error_text)
             self.window.after(0, self.status_var.set, friendly)
             self.window.after(0, self.append_log, friendly, "error")
             technical = summarize_technical_error(error_text)

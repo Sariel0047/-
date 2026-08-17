@@ -142,3 +142,41 @@ def friendly_error_message(message: str) -> str:
         return "我这次没等到文件准备好，你可以点“重新打开工作浏览器”再试一次。"
 
     return "我这边遇到了一点问题，你可以点“重新打开工作浏览器”再试一次。"
+
+
+def friendly_offline_error_message(message: str) -> str:
+    """
+    将离线表格处理异常转换为不依赖浏览器操作的提示。
+    """
+    text = (message or "").strip()
+    normalized = text.lower()
+    if not text:
+        return "处理这份表格时遇到问题，请检查文件格式和内容后再试。"
+
+    if (
+        "xlrd" in normalized
+        or "openpyxl" in normalized
+        or "excel file format" in normalized
+        or "unsupported format" in normalized
+        or "表格兼容组件" in text
+    ):
+        return "这份表格文件暂时无法读取，请确认已安装表格兼容组件，或另存为 .xlsx 后再试。"
+
+    if (
+        "permission denied" in normalized
+        or "errno 13" in normalized
+        or "read-only" in normalized
+        or "只读" in text
+        or "被占用" in text
+    ):
+        return "无法写入汇总表，请关闭正在打开的同名文件，并确认输出目录可以写入后再试。"
+
+    detail = text.splitlines()[-1].strip()
+    if ":" in detail:
+        prefix, candidate = detail.split(":", 1)
+        if prefix.strip().endswith(("Error", "Exception")):
+            detail = candidate.strip()
+    if "缺少" in detail or "未找到" in detail:
+        return f"{detail}。请确认选择的是平台导出的订单明细表。"
+
+    return "处理这份表格时遇到问题，请检查文件格式、表格内容和文件是否被占用后再试。"

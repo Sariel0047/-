@@ -63,6 +63,7 @@ class AppGUI:
     SECONDARY_DARK = "#CBD5E1"
     SUCCESS = "#0F766E"
     ERROR = "#B91C1C"
+    LOG_HEIGHT = 9
 
     def __init__(self) -> None:
         self.root = tk.Tk()
@@ -131,6 +132,16 @@ class AppGUI:
         )
         menubar.add_cascade(label="功能", menu=feature_menu)
         self.root.config(menu=menubar)
+
+    def _get_task_entries(self) -> tuple[tuple[str, object | None], ...]:
+        """
+        返回主界面直接展示的任务入口。
+        """
+        return (
+            ("在线自动生成", None),
+            ("天猫订单表处理", self.open_order_export_window),
+            ("抖音订单表处理", self.open_douyin_order_file_window),
+        )
 
     def open_order_export_window(self) -> None:
         """
@@ -218,6 +229,17 @@ class AppGUI:
         style.map(
             "Ghost.TButton",
             background=[("active", "#EFF6FF"), ("pressed", "#DBEAFE")],
+        )
+        style.configure(
+            "HeroTask.TButton",
+            background="#334155",
+            foreground="white",
+            padding=(14, 10),
+            font=(self.font_family, 10, "bold"),
+        )
+        style.map(
+            "HeroTask.TButton",
+            background=[("active", "#475569"), ("pressed", "#1E293B")],
         )
         self.style = style
 
@@ -311,7 +333,7 @@ class AppGUI:
             highlightbackground=self.HERO_BORDER,
             highlightthickness=1,
             padx=24,
-            pady=20,
+            pady=18,
         )
 
         top_row = tk.Frame(hero, bg=self.HERO_BG)
@@ -329,12 +351,6 @@ class AppGUI:
         ).pack(anchor="w")
         tk.Label(
             left,
-            bg=self.HERO_BG,
-            fg="#CBD5E1",
-            font=(self.font_family, 11),
-        ).pack(anchor="w", pady=(6, 0))
-        tk.Label(
-            left,
             textvariable=self.hint_var,
             bg=self.HERO_BG,
             fg="#93C5FD",
@@ -348,68 +364,51 @@ class AppGUI:
             textvariable=self.platform_badge_var,
             bg="#1D4ED8",
             border="#3B82F6",
-        ).pack(anchor="e", pady=(0, 8))
+        ).pack(side="left")
         self._make_badge(
             right,
             textvariable=self.mode_badge_var,
             bg="#334155",
             border="#475569",
-        ).pack(anchor="e", pady=(0, 8))
+        ).pack(side="left", padx=(8, 0))
         self._make_badge(
             right,
             textvariable=self.output_badge_var,
             bg="#0F766E",
             border="#14B8A6",
-        ).pack(anchor="e")
+        ).pack(side="left", padx=(8, 0))
 
-        chips = tk.Frame(hero, bg=self.HERO_BG)
-        chips.pack(fill="x", pady=(18, 0))
-        steps = (
-            ("1", "开始生成", "唤起 9222 工作浏览器"),
-            ("2", "我已登录", "登录完成后开始生成报表"),
-            ("3", "正在处理", "我会自动采集并写入报表"),
-            ("4", "完成保存", "报表会直接生成到桌面"),
-        )
-        for index, (number, title, detail) in enumerate(steps):
-            card = tk.Frame(
-                chips,
-                bg=self.HERO_CARD_BG,
-                highlightbackground="#334155",
-                highlightthickness=1,
-                padx=12,
-                pady=10,
-            )
-            card.grid(row=0, column=index, sticky="nsew", padx=(0 if index == 0 else 10, 0))
-            chips.columnconfigure(index, weight=1)
-
-            num_row = tk.Frame(card, bg=self.HERO_CARD_BG)
-            num_row.pack(anchor="w")
-            tk.Label(
-                num_row,
-                text=number,
-                bg="#2563EB",
-                fg="white",
-                width=2,
-                font=(self.font_family, 10, "bold"),
-                padx=6,
-                pady=2,
-            ).pack(side="left")
-            tk.Label(
-                num_row,
-                text=title,
-                bg=self.HERO_CARD_BG,
-                fg="white",
-                font=(self.font_family, 11, "bold"),
-            ).pack(side="left", padx=(8, 0))
-            tk.Label(
-                card,
-                text=detail,
-                bg=self.HERO_CARD_BG,
-                fg="#CBD5E1",
-                font=(self.font_family, 9),
-                justify="left",
-                wraplength=170,
-            ).pack(anchor="w", pady=(8, 0))
+        task_section = tk.Frame(hero, bg=self.HERO_BG)
+        task_section.pack(fill="x", pady=(16, 0))
+        tk.Label(
+            task_section,
+            text="选择任务",
+            bg=self.HERO_BG,
+            fg="#CBD5E1",
+            font=(self.font_family, 9, "bold"),
+        ).pack(anchor="w", pady=(0, 8))
+        task_row = tk.Frame(task_section, bg=self.HERO_BG)
+        task_row.pack(fill="x")
+        for index, (label, command) in enumerate(self._get_task_entries()):
+            task_row.columnconfigure(index, weight=1)
+            padx = (0 if index == 0 else 6, 0 if index == 2 else 6)
+            if command is None:
+                tk.Label(
+                    task_row,
+                    text=label,
+                    bg=self.PRIMARY,
+                    fg="white",
+                    font=(self.font_family, 10, "bold"),
+                    padx=14,
+                    pady=11,
+                ).grid(row=0, column=index, sticky="ew", padx=padx)
+            else:
+                ttk.Button(
+                    task_row,
+                    text=label,
+                    command=command,
+                    style="HeroTask.TButton",
+                ).grid(row=0, column=index, sticky="ew", padx=padx)
 
         return hero
 
@@ -603,7 +602,7 @@ class AppGUI:
         self.status_text = scrolledtext.ScrolledText(
             log_wrap,
             width=70,
-            height=18,
+            height=self.LOG_HEIGHT,
             wrap=tk.WORD,
             state="disabled",
             bg="#FFFFFF",
@@ -626,7 +625,7 @@ class AppGUI:
         创建界面组件。
         """
         shell = tk.Frame(self.root, bg=self.BG)
-        shell.pack(fill="both", expand=True, padx=22, pady=22)
+        shell.pack(fill="both", expand=True, padx=22, pady=18)
         shell.columnconfigure(0, weight=1)
         shell.rowconfigure(1, weight=1)
 
@@ -634,7 +633,7 @@ class AppGUI:
         hero.grid(row=0, column=0, sticky="ew")
 
         body = tk.Frame(shell, bg=self.BG)
-        body.grid(row=1, column=0, sticky="nsew", pady=(18, 0))
+        body.grid(row=1, column=0, sticky="nsew", pady=(14, 0))
         body.columnconfigure(0, weight=0)
         body.columnconfigure(1, weight=1)
         body.rowconfigure(1, weight=1)
