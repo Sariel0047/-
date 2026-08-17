@@ -6,12 +6,25 @@ from __future__ import annotations
 
 from datetime import date
 from pathlib import Path
+import tomllib
 
 from openpyxl import Workbook, load_workbook
 import pandas as pd
 
 import qianiu_auto_report.data_process as data_process_module
 from qianiu_auto_report.data_process import DataProcessor
+
+
+def test_project_dependencies_include_xlrd_for_legacy_tables() -> None:
+    """
+    安装包必须声明 xlrd，才能读取旧版 Excel 和 WPS 表格。
+    """
+    pyproject_path = Path(__file__).resolve().parents[1] / "pyproject.toml"
+    with pyproject_path.open("rb") as pyproject_file:
+        pyproject = tomllib.load(pyproject_file)
+
+    dependencies = pyproject["project"]["dependencies"]
+    assert any(dependency.startswith("xlrd>=") for dependency in dependencies)
 
 
 def test_placeholder() -> None:

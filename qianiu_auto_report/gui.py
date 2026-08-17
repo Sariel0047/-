@@ -122,7 +122,7 @@ class AppGUI:
         menubar = tk.Menu(self.root)
         feature_menu = tk.Menu(menubar, tearoff=0)
         feature_menu.add_command(
-            label="已卖出宝贝订单导出",
+            label="天猫订单表处理",
             command=self.open_order_export_window,
         )
         feature_menu.add_command(
@@ -134,7 +134,7 @@ class AppGUI:
 
     def open_order_export_window(self) -> None:
         """
-        打开独立的已卖出宝贝订单导出窗口。
+        打开独立的天猫订单表离线处理窗口。
         """
         from qianiu_auto_report.order_export_gui import OrderExportWindow
 

@@ -1,5 +1,5 @@
 """
-已卖出宝贝订单导出独立窗口。
+天猫订单表离线处理独立窗口。
 """
 
 from __future__ import annotations
@@ -12,20 +12,17 @@ from datetime import datetime
 from pathlib import Path
 from threading import Thread
 import tkinter as tk
-from tkinter import scrolledtext, ttk
+from tkinter import filedialog, scrolledtext, ttk
 
 from qianiu_auto_report.browser_runtime import summarize_technical_error
-from qianiu_auto_report.config import BrowserConfig, DateConfig, ExportConfig
+from qianiu_auto_report.config import ExportConfig
 from qianiu_auto_report.data_process import DataProcessor
-from qianiu_auto_report.gui_support import build_work_browser_command, format_output_dir_label
+from qianiu_auto_report.gui_support import format_output_dir_label
 from qianiu_auto_report.gui_state import friendly_error_message
-from qianiu_auto_report.sold_order_exporter import SoldOrderExporter
 
 
 class OrderExportWindow:
-    """
-    独立的“已卖出宝贝订单导出”窗口。
-    """
+    """独立的“天猫订单表处理”窗口。"""
 
     BG = "#F3F6FB"
     CARD_BG = "#FFFFFF"
@@ -41,22 +38,16 @@ class OrderExportWindow:
         self.window = tk.Toplevel(parent)
         self.font_family = "PingFang SC" if sys.platform == "darwin" else "Microsoft YaHei UI"
         self.output_dir = Path(ExportConfig.DOWNLOAD_DIR).expanduser()
-        default_date = DateConfig.default_report_date_str()
+        self.input_file_var = tk.StringVar(value="")
+        self.status_var = tk.StringVar(value="请选择天猫宝贝销售明细报表，然后点击开始处理。")
 
-        self.product_ids_var = tk.StringVar(value="")
-        self.start_date_var = tk.StringVar(value=default_date)
-        self.end_date_var = tk.StringVar(value=default_date)
-        self.status_var = tk.StringVar(value="请先打开 9222 工作浏览器并登录千牛/天猫商家后台。")
-
-        self.open_browser_button: ttk.Button | None = None
-        self.start_export_button: ttk.Button | None = None
+        self.choose_file_button: ttk.Button | None = None
+        self.start_button: ttk.Button | None = None
         self.open_output_button: ttk.Button | None = None
         self.close_button: ttk.Button | None = None
         self.progressbar: ttk.Progressbar | None = None
-        self.product_ids_text: tk.Text | None = None
+        self.input_file_entry: ttk.Entry | None = None
         self.log_text: scrolledtext.ScrolledText | None = None
-
-        self.exporter: SoldOrderExporter | None = None
         self.running = False
 
         self._build_window()
@@ -65,9 +56,9 @@ class OrderExportWindow:
         self._bind_events()
 
     def _build_window(self) -> None:
-        self.window.title("已卖出宝贝订单导出")
-        self.window.geometry("820x660")
-        self.window.minsize(760, 600)
+        self.window.title("天猫订单表处理")
+        self.window.geometry("820x620")
+        self.window.minsize(760, 560)
         self.window.resizable(True, True)
         self.window.configure(bg=self.BG)
         self.window.transient(self.parent)
@@ -118,14 +109,14 @@ class OrderExportWindow:
         header.grid(row=0, column=0, sticky="ew")
         tk.Label(
             header,
-            text="已卖出宝贝订单导出",
+            text="天猫订单表处理",
             bg=self.CARD_BG,
             fg=self.TEXT,
             font=(self.font_family, 20, "bold"),
         ).pack(anchor="w")
         tk.Label(
             header,
-            text="按商品 ID 和付款时间导出【宝贝销售明细报表】，并生成订单汇总表。",
+            text="导入天猫/淘宝宝贝销售明细报表，按商品 ID 汇总订单、金额和退款数据。",
             bg=self.CARD_BG,
             fg=self.MUTED,
             font=(self.font_family, 10),
@@ -134,10 +125,25 @@ class OrderExportWindow:
         form = self._make_card(shell, padding=20)
         form.grid(row=1, column=0, sticky="ew", pady=(14, 0))
         form.columnconfigure(1, weight=1)
-
-        self._add_product_ids_text(form, 0)
-        self._add_labeled_entry(form, 1, "付款开始日期", self.start_date_var)
-        self._add_labeled_entry(form, 2, "付款结束日期", self.end_date_var)
+        tk.Label(
+            form,
+            text="订单明细表",
+            bg=self.CARD_BG,
+            fg=self.MUTED,
+            font=(self.font_family, 10, "bold"),
+        ).grid(row=0, column=0, sticky="w", pady=(0, 10))
+        file_row = tk.Frame(form, bg=self.CARD_BG)
+        file_row.grid(row=0, column=1, sticky="ew", pady=(0, 10))
+        file_row.columnconfigure(0, weight=1)
+        self.input_file_entry = ttk.Entry(file_row, textvariable=self.input_file_var)
+        self.input_file_entry.grid(row=0, column=0, sticky="ew")
+        self.choose_file_button = ttk.Button(
+            file_row,
+            text="选择文件",
+            style="OrderSecondary.TButton",
+            command=self.on_choose_file_clicked,
+        )
+        self.choose_file_button.grid(row=0, column=1, padx=(10, 0))
 
         tk.Label(
             form,
@@ -145,9 +151,9 @@ class OrderExportWindow:
             bg=self.CARD_BG,
             fg=self.MUTED,
             font=(self.font_family, 10, "bold"),
-        ).grid(row=3, column=0, sticky="w", pady=(0, 10))
+        ).grid(row=1, column=0, sticky="w", pady=(0, 10))
         output_row = tk.Frame(form, bg=self.CARD_BG)
-        output_row.grid(row=3, column=1, sticky="ew", pady=(0, 10))
+        output_row.grid(row=1, column=1, sticky="ew", pady=(0, 10))
         output_row.columnconfigure(0, weight=1)
         tk.Label(
             output_row,
@@ -167,42 +173,32 @@ class OrderExportWindow:
             command=self._open_output_dir,
         )
         self.open_output_button.grid(row=0, column=1, padx=(10, 0))
-
         tk.Label(
             form,
-            text="商品 ID 可一行一个，或用逗号、空格分隔；程序会按英文逗号提交。日期格式为 YYYY-MM-DD。",
+            text="支持 .csv、.xlsx、.xls、.xlsm 和 .et 文件；程序会汇总文件中的全部商品。",
             bg=self.CARD_BG,
             fg=self.MUTED,
             font=(self.font_family, 9),
-        ).grid(row=4, column=0, columnspan=2, sticky="w", pady=(4, 0))
+        ).grid(row=2, column=0, columnspan=2, sticky="w", pady=(4, 0))
 
         actions = self._make_card(shell, padding=20)
         actions.grid(row=2, column=0, sticky="ew", pady=(14, 0))
         actions.columnconfigure(0, weight=1)
-        actions.columnconfigure(1, weight=1)
-        actions.columnconfigure(2, weight=0)
-        self.open_browser_button = ttk.Button(
+        actions.columnconfigure(1, weight=0)
+        self.start_button = ttk.Button(
             actions,
-            text="打开 9222 工作浏览器",
-            style="OrderSecondary.TButton",
-            command=self.on_open_browser_clicked,
-        )
-        self.open_browser_button.grid(row=0, column=0, sticky="ew", padx=(0, 8))
-        self.start_export_button = ttk.Button(
-            actions,
-            text="我已登录，开始导出订单表",
+            text="开始处理并生成汇总表",
             style="OrderPrimary.TButton",
-            command=self.on_start_export_clicked,
+            command=self.on_start_clicked,
         )
-        self.start_export_button.grid(row=0, column=1, sticky="ew", padx=(8, 8))
+        self.start_button.grid(row=0, column=0, sticky="ew", padx=(0, 8))
         self.close_button = ttk.Button(
             actions,
             text="关闭",
             style="OrderSecondary.TButton",
             command=self._on_close,
         )
-        self.close_button.grid(row=0, column=2, sticky="ew", padx=(8, 0))
-
+        self.close_button.grid(row=0, column=1, sticky="ew", padx=(8, 0))
         tk.Label(
             actions,
             textvariable=self.status_var,
@@ -211,9 +207,9 @@ class OrderExportWindow:
             font=(self.font_family, 10, "bold"),
             anchor="w",
             justify="left",
-        ).grid(row=1, column=0, columnspan=3, sticky="ew", pady=(14, 0))
+        ).grid(row=1, column=0, columnspan=2, sticky="ew", pady=(14, 0))
         self.progressbar = ttk.Progressbar(actions, mode="indeterminate")
-        self.progressbar.grid(row=2, column=0, columnspan=3, sticky="ew", pady=(10, 0))
+        self.progressbar.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(10, 0))
 
         log_card = self._make_card(shell, padding=20)
         log_card.grid(row=3, column=0, sticky="nsew", pady=(14, 0))
@@ -228,7 +224,7 @@ class OrderExportWindow:
         ).grid(row=0, column=0, sticky="w")
         self.log_text = scrolledtext.ScrolledText(
             log_card,
-            height=13,
+            height=11,
             wrap=tk.WORD,
             state="disabled",
             bg="#FFFFFF",
@@ -240,46 +236,7 @@ class OrderExportWindow:
         self.log_text.grid(row=1, column=0, sticky="nsew", pady=(12, 0))
         self.log_text.tag_configure("error", foreground=self.ERROR)
         self.log_text.tag_configure("success", foreground=self.SUCCESS)
-
-        self.append_log("订单导出助手已打开。")
-
-    def _add_product_ids_text(self, parent: tk.Misc, row: int) -> None:
-        tk.Label(
-            parent,
-            text="商品 ID",
-            bg=self.CARD_BG,
-            fg=self.MUTED,
-            font=(self.font_family, 10, "bold"),
-        ).grid(row=row, column=0, sticky="nw", pady=(0, 10))
-        self.product_ids_text = tk.Text(
-            parent,
-            height=4,
-            wrap=tk.WORD,
-            bg=self.CARD_BG,
-            fg=self.TEXT,
-            relief="solid",
-            borderwidth=1,
-            font=(self.font_family, 10),
-            padx=8,
-            pady=6,
-        )
-        self.product_ids_text.grid(row=row, column=1, sticky="ew", pady=(0, 10))
-
-    def _add_labeled_entry(
-        self,
-        parent: tk.Misc,
-        row: int,
-        label: str,
-        variable: tk.StringVar,
-    ) -> None:
-        tk.Label(
-            parent,
-            text=label,
-            bg=self.CARD_BG,
-            fg=self.MUTED,
-            font=(self.font_family, 10, "bold"),
-        ).grid(row=row, column=0, sticky="w", pady=(0, 10))
-        ttk.Entry(parent, textvariable=variable).grid(row=row, column=1, sticky="ew", pady=(0, 10))
+        self.append_log("天猫订单表处理助手已打开。")
 
     def _bind_events(self) -> None:
         self.window.protocol("WM_DELETE_WINDOW", self._on_close)
@@ -294,65 +251,49 @@ class OrderExportWindow:
         if status:
             self.status_var.set(status)
         state = "disabled" if running else "normal"
-        for button in (self.open_browser_button, self.start_export_button, self.close_button, self.open_output_button):
+        for button in (
+            self.choose_file_button,
+            self.start_button,
+            self.close_button,
+            self.open_output_button,
+        ):
             if button is not None:
-                button.config(state=state if button is not self.close_button else "normal")
-        if self.product_ids_text is not None:
-            self.product_ids_text.config(state=state)
+                button.config(state=state)
+        input_file_entry = getattr(self, "input_file_entry", None)
+        if input_file_entry is not None:
+            input_file_entry.config(state=state)
         if self.progressbar is not None:
             if running:
                 self.progressbar.start(12)
             else:
                 self.progressbar.stop()
 
-    def _get_request(self) -> dict[str, str]:
-        if self.product_ids_text is not None:
-            product_ids = self.product_ids_text.get("1.0", tk.END).strip()
-        else:
-            product_ids = (self.product_ids_var.get() or "").strip()
-        start_value = (self.start_date_var.get() or "").strip()
-        end_value = (self.end_date_var.get() or "").strip()
+    def _get_request(self) -> dict[str, Path]:
+        input_file = Path((self.input_file_var.get() or "").strip()).expanduser()
+        if not input_file.exists() or not input_file.is_file():
+            raise ValueError("请先选择一份天猫订单明细表。")
+        if input_file.suffix.lower() not in DataProcessor.SUPPORTED_TABLE_SUFFIXES:
+            raise ValueError("请选择表格文件（.csv/.xlsx/.xls/.xlsm/.et）。")
+        return {"input_file": input_file}
 
-        if not product_ids:
-            raise ValueError("请先输入至少一个商品 ID。")
-        normalized_product_ids = ",".join(SoldOrderExporter.normalize_product_ids(product_ids))
-        if not normalized_product_ids:
-            raise ValueError("请先输入至少一个商品 ID。")
-        try:
-            start_date = datetime.strptime(start_value, DateConfig.DATE_FORMAT)
-        except ValueError as exc:
-            raise ValueError("付款开始日期格式不正确，请输入 YYYY-MM-DD。") from exc
-        try:
-            end_date = datetime.strptime(end_value, DateConfig.DATE_FORMAT)
-        except ValueError as exc:
-            raise ValueError("付款结束日期格式不正确，请输入 YYYY-MM-DD。") from exc
-        if end_date < start_date:
-            raise ValueError("付款结束日期不能早于付款开始日期。")
-
-        return {
-            "product_ids": normalized_product_ids,
-            "start_date": start_date.strftime(DateConfig.DATE_FORMAT),
-            "end_date": end_date.strftime(DateConfig.DATE_FORMAT),
-        }
-
-    def on_open_browser_clicked(self) -> None:
+    def on_choose_file_clicked(self) -> None:
         if self.running:
             return
-        try:
-            command = build_work_browser_command(chrome_binary_path=BrowserConfig.CHROME_BINARY_PATH)
-            subprocess.Popen(command)
-            self.status_var.set("浏览器已打开，请登录千牛/天猫商家后台后再点击开始导出。")
-            self.append_log("已打开 9222 工作浏览器。")
-        except Exception:
-            error_text = traceback.format_exc().strip()
-            self.status_var.set("我没能打开工作浏览器。")
-            self.append_log(friendly_error_message(error_text), tag="error")
-            technical = summarize_technical_error(error_text)
-            if technical:
-                self.append_log(f"技术细节：{technical}", tag="error")
-            print(error_text, file=sys.stderr)
+        file_path = filedialog.askopenfilename(
+            parent=self.window,
+            title="选择天猫订单明细表",
+            filetypes=(
+                ("表格文件", "*.csv *.xlsx *.xls *.xlsm *.et"),
+                ("CSV 文件", "*.csv"),
+                ("Excel/WPS 文件", "*.xlsx *.xls *.xlsm *.et"),
+                ("所有文件", "*.*"),
+            ),
+        )
+        if file_path:
+            self.input_file_var.set(file_path)
+            self.append_log(f"已选择文件：{Path(file_path).name}")
 
-    def on_start_export_clicked(self) -> None:
+    def on_start_clicked(self) -> None:
         if self.running:
             return
         try:
@@ -362,43 +303,22 @@ class OrderExportWindow:
             self.append_log(str(exc), tag="error")
             return
 
-        self._set_running(True, "正在导出订单表，请不要切换浏览器标签页。")
-        worker = Thread(target=self._export_worker, kwargs={"request": request}, daemon=True)
+        self._set_running(True, "正在处理天猫订单明细表。")
+        worker = Thread(target=self._process_worker, kwargs={"request": request}, daemon=True)
         worker.start()
 
-    def _export_worker(self, request: dict[str, str]) -> None:
+    def _process_worker(self, request: dict[str, Path]) -> None:
         try:
             self.output_dir.mkdir(parents=True, exist_ok=True)
-            if self.exporter is not None:
-                self.exporter.close()
-                self.exporter = None
-            self.exporter = SoldOrderExporter(attach_to_existing_browser=True)
-            self.exporter.init_driver(download_dir=self.output_dir)
-            self.window.after(0, self.append_log, "已连接 9222 工作浏览器。")
-            self.window.after(
-                0,
-                self.append_log,
-                (
-                    "准备导出："
-                    f"商品ID={request['product_ids']}，"
-                    f"付款时间={request['start_date']} ~ {request['end_date']}"
-                ),
-            )
-            exported_file = self.exporter.export_after_login(
-                download_dir=self.output_dir,
-                product_ids=request["product_ids"],
-                start_date=request["start_date"],
-                end_date=request["end_date"],
-            )
-            summary_file = self._build_summary_output_path(request)
+            input_file = Path(request["input_file"])
+            self.window.after(0, self.append_log, f"开始处理：{input_file.name}")
+            output_file = self._build_output_path()
             DataProcessor().save_tmall_sold_order_summary(
-                input_path=exported_file,
-                output_path=summary_file,
-                product_ids=request["product_ids"],
+                input_path=input_file,
+                output_path=output_file,
             )
-            self.window.after(0, self.status_var.set, "订单原始表和汇总表已生成到桌面。")
-            self.window.after(0, self.append_log, f"原始订单表已下载：{exported_file.name}", "success")
-            self.window.after(0, self.append_log, f"订单汇总表已生成：{summary_file.name}", "success")
+            self.window.after(0, self.status_var.set, "天猫订单汇总表已生成到桌面。")
+            self.window.after(0, self.append_log, f"天猫订单汇总表已生成：{output_file.name}", "success")
         except Exception:
             error_text = traceback.format_exc().strip()
             friendly = friendly_error_message(error_text)
@@ -409,18 +329,11 @@ class OrderExportWindow:
                 self.window.after(0, self.append_log, f"技术细节：{technical}", "error")
             print(error_text, file=sys.stderr)
         finally:
-            try:
-                if self.exporter is not None:
-                    self.exporter.close()
-            finally:
-                self.exporter = None
             self.window.after(0, self._set_running, False)
 
-    def _build_summary_output_path(self, request: dict[str, str]) -> Path:
+    def _build_output_path(self) -> Path:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        return self.output_dir / (
-            f"天猫订单汇总_{request['start_date']}_{request['end_date']}_{timestamp}.xlsx"
-        )
+        return self.output_dir / f"天猫订单汇总_{timestamp}.xlsx"
 
     def _open_output_dir(self) -> None:
         try:
@@ -451,8 +364,7 @@ class OrderExportWindow:
         self.log_text.config(state="disabled")
 
     def _on_close(self) -> None:
-        try:
-            if self.exporter is not None:
-                self.exporter.close()
-        finally:
-            self.window.destroy()
+        if self.running:
+            self.status_var.set("订单表正在处理，请等待处理完成后再关闭。")
+            return
+        self.window.destroy()

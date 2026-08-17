@@ -283,7 +283,7 @@ def test_build_menu_adds_independent_order_export_entry(monkeypatch: object) -> 
 
     assert fake.root.configured_menu is not None
     labels = [label for label, _command in created_commands]
-    assert labels == ["已卖出宝贝订单导出", "抖音订单表处理"]
+    assert labels == ["天猫订单表处理", "抖音订单表处理"]
     assert all(callable(command) for _label, command in created_commands)
 
 
