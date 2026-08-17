@@ -10,3 +10,4 @@ dist/
 qianiu_auto_report/output/
 qianiu_auto_report/logs/
 .venv-arm64/
+.worktrees/
