@@ -13,12 +13,18 @@ from pathlib import Path
 from threading import Thread
 import tkinter as tk
 from tkinter import filedialog, scrolledtext, ttk
+from typing import TypedDict
 
 from qianiu_auto_report.browser_runtime import summarize_technical_error
 from qianiu_auto_report.config import ExportConfig
 from qianiu_auto_report.data_process import DataProcessor
 from qianiu_auto_report.gui_support import format_output_dir_label
 from qianiu_auto_report.gui_state import friendly_error_message
+
+
+class OrderProcessingRequest(TypedDict):
+    input_file: Path
+    product_ids: tuple[str, ...]
 
 
 class OrderExportWindow:
@@ -39,7 +45,7 @@ class OrderExportWindow:
         self.font_family = "PingFang SC" if sys.platform == "darwin" else "Microsoft YaHei UI"
         self.output_dir = Path(ExportConfig.DOWNLOAD_DIR).expanduser()
         self.input_file_var = tk.StringVar(value="")
-        self.status_var = tk.StringVar(value="请选择天猫宝贝销售明细报表，然后点击开始处理。")
+        self.status_var = tk.StringVar(value="请选择天猫宝贝销售明细报表并输入商品 ID。")
 
         self.choose_file_button: ttk.Button | None = None
         self.start_button: ttk.Button | None = None
@@ -47,6 +53,7 @@ class OrderExportWindow:
         self.close_button: ttk.Button | None = None
         self.progressbar: ttk.Progressbar | None = None
         self.input_file_entry: ttk.Entry | None = None
+        self.product_ids_text: tk.Text | None = None
         self.log_text: scrolledtext.ScrolledText | None = None
         self.running = False
 
@@ -57,8 +64,8 @@ class OrderExportWindow:
 
     def _build_window(self) -> None:
         self.window.title("天猫订单表处理")
-        self.window.geometry("820x620")
-        self.window.minsize(760, 560)
+        self.window.geometry("820x750")
+        self.window.minsize(760, 660)
         self.window.resizable(True, True)
         self.window.configure(bg=self.BG)
         self.window.transient(self.parent)
@@ -147,13 +154,34 @@ class OrderExportWindow:
 
         tk.Label(
             form,
+            text="商品 ID（必填）",
+            bg=self.CARD_BG,
+            fg=self.MUTED,
+            font=(self.font_family, 10, "bold"),
+        ).grid(row=1, column=0, sticky="nw", pady=(0, 10))
+        self.product_ids_text = tk.Text(
+            form,
+            height=3,
+            wrap=tk.WORD,
+            bg=self.CARD_BG,
+            fg=self.TEXT,
+            relief="solid",
+            borderwidth=1,
+            font=(self.font_family, 10),
+            padx=8,
+            pady=6,
+        )
+        self.product_ids_text.grid(row=1, column=1, sticky="ew", pady=(0, 10))
+
+        tk.Label(
+            form,
             text="保存位置",
             bg=self.CARD_BG,
             fg=self.MUTED,
             font=(self.font_family, 10, "bold"),
-        ).grid(row=1, column=0, sticky="w", pady=(0, 10))
+        ).grid(row=2, column=0, sticky="w", pady=(0, 10))
         output_row = tk.Frame(form, bg=self.CARD_BG)
-        output_row.grid(row=1, column=1, sticky="ew", pady=(0, 10))
+        output_row.grid(row=2, column=1, sticky="ew", pady=(0, 10))
         output_row.columnconfigure(0, weight=1)
         tk.Label(
             output_row,
@@ -175,11 +203,11 @@ class OrderExportWindow:
         self.open_output_button.grid(row=0, column=1, padx=(10, 0))
         tk.Label(
             form,
-            text="支持 .csv、.xlsx、.xls、.xlsm 和 .et 文件；程序会汇总文件中的全部商品。",
+            text="商品 ID 支持逗号、分号、空格或换行分隔，重复 ID 会自动去除。",
             bg=self.CARD_BG,
             fg=self.MUTED,
             font=(self.font_family, 9),
-        ).grid(row=2, column=0, columnspan=2, sticky="w", pady=(4, 0))
+        ).grid(row=3, column=0, columnspan=2, sticky="w", pady=(4, 0))
 
         actions = self._make_card(shell, padding=20)
         actions.grid(row=2, column=0, sticky="ew", pady=(14, 0))
@@ -224,7 +252,7 @@ class OrderExportWindow:
         ).grid(row=0, column=0, sticky="w")
         self.log_text = scrolledtext.ScrolledText(
             log_card,
-            height=11,
+            height=6,
             wrap=tk.WORD,
             state="disabled",
             bg="#FFFFFF",
@@ -262,19 +290,28 @@ class OrderExportWindow:
         input_file_entry = getattr(self, "input_file_entry", None)
         if input_file_entry is not None:
             input_file_entry.config(state=state)
+        product_ids_text = getattr(self, "product_ids_text", None)
+        if product_ids_text is not None:
+            product_ids_text.config(state=state)
         if self.progressbar is not None:
             if running:
                 self.progressbar.start(12)
             else:
                 self.progressbar.stop()
 
-    def _get_request(self) -> dict[str, Path]:
+    def _get_request(self) -> OrderProcessingRequest:
         input_file = Path((self.input_file_var.get() or "").strip()).expanduser()
         if not input_file.exists() or not input_file.is_file():
             raise ValueError("请先选择一份天猫订单明细表。")
         if input_file.suffix.lower() not in DataProcessor.SUPPORTED_TABLE_SUFFIXES:
             raise ValueError("请选择表格文件（.csv/.xlsx/.xls/.xlsm/.et）。")
-        return {"input_file": input_file}
+        raw_product_ids = ""
+        if self.product_ids_text is not None:
+            raw_product_ids = self.product_ids_text.get("1.0", tk.END)
+        product_ids = DataProcessor._normalize_identifier_list(raw_product_ids)
+        if not product_ids:
+            raise ValueError("请至少输入一个商品 ID。")
+        return {"input_file": input_file, "product_ids": product_ids}
 
     def on_choose_file_clicked(self) -> None:
         if self.running:
@@ -303,19 +340,25 @@ class OrderExportWindow:
             self.append_log(str(exc), tag="error")
             return
 
-        self._set_running(True, "正在处理天猫订单明细表。")
+        self._set_running(True, f"正在处理 {len(request['product_ids'])} 个商品 ID。")
         worker = Thread(target=self._process_worker, kwargs={"request": request}, daemon=True)
         worker.start()
 
-    def _process_worker(self, request: dict[str, Path]) -> None:
+    def _process_worker(self, request: OrderProcessingRequest) -> None:
         try:
             self.output_dir.mkdir(parents=True, exist_ok=True)
             input_file = Path(request["input_file"])
             self.window.after(0, self.append_log, f"开始处理：{input_file.name}")
+            self.window.after(
+                0,
+                self.append_log,
+                f"已识别 {len(request['product_ids'])} 个商品 ID，将仅汇总这些商品。",
+            )
             output_file = self._build_output_path()
             DataProcessor().save_tmall_sold_order_summary(
                 input_path=input_file,
                 output_path=output_file,
+                product_ids=request["product_ids"],
             )
             self.window.after(0, self.status_var.set, "天猫订单汇总表已生成到桌面。")
             self.window.after(0, self.append_log, f"天猫订单汇总表已生成：{output_file.name}", "success")

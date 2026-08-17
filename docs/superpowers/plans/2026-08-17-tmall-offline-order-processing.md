@@ -10,6 +10,8 @@
 
 ---
 
+> **Revision:** Task 5 supersedes the earlier full-file product behavior after a real Tmall export was found to contain products outside the filter used on the export page.
+
 ## File Structure
 
 - Modify `pyproject.toml`: declare the already-required `xlrd` runtime dependency.
@@ -430,3 +432,40 @@ git commit -m "test: cover tmall offline workflow regression"
 ```
 
 Otherwise, do not create an empty commit.
+
+### Task 5: Require Product IDs and Filter the Offline Summary
+
+**Files:**
+- Modify: `qianiu_auto_report/order_export_gui.py`
+- Modify: `tests/test_order_export_gui.py`
+- Modify: `docs/superpowers/specs/2026-08-17-tmall-offline-order-processing-design.md`
+
+- [x] **Step 1: Add failing request and worker tests**
+
+Cover required product IDs, separator normalization, duplicate removal, product-ID parameter forwarding, and disabling the product-ID field while processing.
+
+- [x] **Step 2: Run the focused tests and confirm the expected failures**
+
+```bash
+.venv-arm64/bin/python -m pytest -q tests/test_order_export_gui.py
+```
+
+Expected: failures show that the existing window ignores product IDs and processes the entire file.
+
+- [x] **Step 3: Add the required product-ID field**
+
+Add a multiline `商品 ID（必填）` field. Normalize it with the existing `DataProcessor._normalize_identifier_list` rule and reject input that is empty after normalization.
+
+- [x] **Step 4: Forward the normalized filter**
+
+Include the product-ID tuple in `OrderProcessingRequest`, pass it to `save_tmall_sold_order_summary`, log the recognized count, and disable the field while work is running.
+
+- [x] **Step 5: Run focused and full verification**
+
+```bash
+.venv-arm64/bin/python -m pytest -q tests/test_order_export_gui.py
+.venv-arm64/bin/python -m pytest -q
+git diff --check
+```
+
+Expected: all tests pass and no whitespace errors are reported. Per the user's instruction, leave all changes uncommitted.
