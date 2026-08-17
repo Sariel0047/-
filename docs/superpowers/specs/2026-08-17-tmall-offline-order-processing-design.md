@@ -29,6 +29,8 @@ The existing `OrderExportWindow` entry point remains in place to minimize integr
 - Retain the output-directory display, "打开目录" action, status text, progress indicator, execution log, and close action.
 - Accept `.csv`, `.xlsx`, `.xls`, `.xlsm`, and `.et` in the file picker and request validation.
 
+Because `.xls` and `.et` reading uses `xlrd`, keep the declared application dependencies consistent by adding the existing `requirements.txt` constraint for `xlrd` to `pyproject.toml`. This ensures those formats remain available in installed or packaged builds, not only in the development environment.
+
 The visual styling should continue to follow the existing Tkinter card, color, spacing, and typography conventions. Broader UI modernization is explicitly out of scope.
 
 ## Processing Architecture
@@ -91,6 +93,8 @@ During processing:
 
 This prevents the window from being destroyed while queued Tk callbacks still target its widgets. Once processing is no longer running, the close button and window-manager close action destroy the window normally.
 
+This lifecycle intentionally differs from the current `DouyinOrderFileWindow`, which keeps its close button enabled while work is running. Changing the Douyin window is outside this feature's scope.
+
 ## Error Handling
 
 - Reject missing paths and directories before starting the worker.
@@ -104,6 +108,7 @@ This prevents the window from being destroyed while queued Tk callbacks still ta
 Add focused tests for the offline Tmall window and retain the existing Tmall processor tests.
 
 - Request validation accepts each supported table suffix and rejects missing or unsupported files.
+- Project dependency metadata includes `xlrd` so `.xls` and `.et` support is preserved outside the development environment.
 - The processing worker calls `save_tmall_sold_order_summary` without a product-ID filter.
 - Output naming follows `天猫订单汇总_YYYYMMDD_HHMMSS.xlsx`.
 - Running state disables every destructive or conflicting action, including close.
