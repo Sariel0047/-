@@ -85,7 +85,14 @@ class _ClickableElement(_FakeElement):
 class _AfterSaleShortcutDriver:
     def __init__(self, clicks: list[str]) -> None:
         self.clicks = clicks
+        self.date_dropdown_open = False
         self.date_field = _ClickableElement("申请时间", clicks=clicks, name="date-field")
+        self.date_content = _ClickableElement(
+            "申请时间",
+            clicks=clicks,
+            name="aurora-select-content",
+            on_click=lambda: setattr(self, "date_dropdown_open", True),
+        )
         self.hidden_date_option = _ClickableElement(
             "完结时间",
             displayed=False,
@@ -96,7 +103,7 @@ class _AfterSaleShortcutDriver:
             "完结时间",
             clicks=clicks,
             name="end-time-option",
-            on_click=lambda: setattr(self.date_field, "text", "完结时间"),
+            on_click=lambda: setattr(self.date_content, "text", "完结时间"),
         )
         self.shortcut = _ClickableElement("请选择", clicks=clicks, name="date-shortcut")
         self.hidden_option = _ClickableElement(
@@ -110,9 +117,17 @@ class _AfterSaleShortcutDriver:
     def find_elements(self, by: str, value: str) -> list[_FakeElement]:
         if by != By.XPATH:
             return []
+        if (
+            "aurora-select-content" in value
+            and "compactWrapper" not in value
+            and "auxo-picker-range" not in value
+        ):
+            return [self.date_content]
         if "compactWrapper" in value and "auxo-picker-range" in value:
             return [self.date_field]
         if "auxo-select-dropdown" in value and "完结时间" in value:
+            if not self.date_dropdown_open:
+                return []
             return [self.hidden_date_option, self.visible_date_option]
         if "auxo-picker-range" in value and "following" in value:
             return [self.shortcut]
@@ -1921,7 +1936,7 @@ def test_after_sale_workbench_page_readiness_accepts_spaced_query_text() -> None
 
 def test_select_douyin_after_sale_date_field_uses_compact_date_control() -> None:
     """
-    售后工作台“申请时间/完结时间”是复合日期控件，不能按普通 labelWrapper 字段选择。
+    售后工作台日期字段必须先点击 aurora-select-content 外层容器，再选择“完结时间”。
     """
     exporter = WebExporter()
     clicks: list[str] = []
@@ -1929,7 +1944,7 @@ def test_select_douyin_after_sale_date_field_uses_compact_date_control() -> None
     exporter._promotion_pause = lambda scale=1.0: None  # type: ignore[method-assign]
 
     assert exporter._select_douyin_after_sale_date_field_option("完结时间") is True
-    assert clicks == ["date-field", "end-time-option"]
+    assert clicks == ["aurora-select-content", "end-time-option"]
 
 
 def test_select_douyin_after_sale_date_shortcut_uses_right_side_quick_select() -> None:

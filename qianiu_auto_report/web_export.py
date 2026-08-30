@@ -4986,6 +4986,10 @@ class WebExporter:
         driver = self._ensure_driver()
         field_xpaths = (
             (
+                "//*[contains(@class,'aurora-select-content') and "
+                "(normalize-space()='申请时间' or @title='申请时间' or @aria-label='申请时间')]"
+            ),
+            (
                 "//*[contains(@class,'compactWrapper') and .//*[contains(@class,'auxo-picker-range')]]"
                 "//*[contains(@class,'auxo-select-selector')][1]"
             ),
@@ -5078,6 +5082,10 @@ class WebExporter:
         """
         driver = self._ensure_driver()
         field_xpaths = (
+            (
+                "//*[contains(@class,'aurora-select-content') and "
+                f"(normalize-space()='{option_text}' or @title='{option_text}' or @aria-label='{option_text}')]"
+            ),
             (
                 "//*[contains(@class,'compactWrapper') and .//*[contains(@class,'auxo-picker-range')]]"
                 "//*[contains(@class,'auxo-select-selector')][1]"
