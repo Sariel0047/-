@@ -3539,6 +3539,10 @@ class WebExporter:
 
         if not self._click_douyin_compass_calendar_day_twice(target):
             self._raise_timeout_with_context(f"电商罗盘未能选择日期：{target}")
+        if not self._click_douyin_compass_calendar_confirm():
+            self._raise_timeout_with_context(
+                "电商罗盘日期面板未能提交所选日期。",
+            )
 
         try:
             self._wait_until(
@@ -3667,6 +3671,64 @@ class WebExporter:
         if second_clicked:
             time.sleep(max(self.ui_poll_interval_seconds, 0.25))
         return bool(first_clicked and second_clicked)
+
+    def _click_douyin_compass_calendar_confirm(self) -> bool:
+        """
+        点击电商罗盘自定义日期面板的【确定/应用】。
+
+        某些版本在选完日期后会自动关闭面板，此时无需额外点击即可视为提交完成。
+        """
+        driver = self._ensure_driver()
+        try:
+            clicked = bool(
+                driver.execute_script(
+                    """
+                    const normalize = (v) => String(v || '').replace(/\\s+/g, ' ').trim();
+                    const visible = (el) => {
+                      if (!el) return false;
+                      const style = getComputedStyle(el);
+                      const rect = el.getBoundingClientRect();
+                      return style.visibility !== 'hidden' && style.display !== 'none'
+                        && rect.width >= 10 && rect.height >= 10
+                        && rect.bottom >= 0 && rect.top <= window.innerHeight + 160;
+                    };
+                    const clickNode = (node) => {
+                      if (!node) return false;
+                      node.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+                      node.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+                      node.click();
+                      return true;
+                    };
+                    const panels = Array.from(document.querySelectorAll(
+                      '.auxo-picker-panel, .auxo-picker-date-panel, .auxo-picker-dropdown, ' +
+                      '.sp-range-picker-join-dropdown, [class*="picker-panel"], [class*="picker-dropdown"], [class*="date-panel"]'
+                    ))
+                      .filter(visible)
+                      .filter((panel) => /20\\d{2}年\\s*\\d{1,2}月/.test(normalize(panel.innerText || panel.textContent || '')));
+                    for (const panel of panels) {
+                      const buttons = Array.from(panel.querySelectorAll('button, [role="button"], span, div'))
+                        .filter(visible)
+                        .filter((el) => ['确定', '应用'].includes(normalize(el.innerText || el.textContent || '')));
+                      if (buttons.length) return clickNode(buttons[buttons.length - 1]);
+                    }
+                    return false;
+                    """
+                )
+            )
+        except Exception:
+            clicked = False
+
+        if not clicked:
+            clicked = self._click_text_with_wait(
+                ("确定", "应用"),
+                exact=True,
+                timeout_seconds=3.0,
+                required=False,
+            )
+        if clicked:
+            time.sleep(max(self.ui_poll_interval_seconds, 0.25))
+            return True
+        return not self._is_douyin_compass_custom_date_picker_open()
 
     def _bring_douyin_compass_calendar_month_into_view(self, report_date: str) -> bool:
         """
@@ -5512,7 +5574,11 @@ class WebExporter:
                       return true;
                     };
 
-                    const panels = Array.from(document.querySelectorAll('.auxo-picker-panel, .auxo-picker-date-panel'))
+                    const panels = Array.from(document.querySelectorAll(
+                      '.auxo-picker-panel, .auxo-picker-date-panel, ' +
+                      '.aurora-picker-panel, .aurora-picker-date-panel, ' +
+                      '[class*="picker-panel"], [class*="date-panel"]'
+                    ))
                       .filter(visible)
                       .map((panel) => ({ panel, text: normalize(panel.innerText || panel.textContent || ''), rect: panel.getBoundingClientRect() }))
                       .filter((item) => item.text.replace(/\\s+/g, '').includes(targetMonthText));
@@ -5528,7 +5594,10 @@ class WebExporter:
                       });
                     if (attrMatches.length) return clickNode(attrMatches[0]);
 
-                    const candidates = Array.from(panel.querySelectorAll('td, .auxo-picker-cell, .auxo-picker-cell-inner, button, span, div'))
+                    const candidates = Array.from(panel.querySelectorAll(
+                      'td, .auxo-picker-cell, .auxo-picker-cell-inner, ' +
+                      '.aurora-picker-cell, .aurora-picker-cell-inner, button, span, div'
+                    ))
                       .filter(visible)
                       .map((el) => ({ el, text: normalize(el.innerText || el.textContent || ''), rect: el.getBoundingClientRect() }))
                       .filter((item) => item.text === dayText && !isDisabled(item.el))
@@ -5566,7 +5635,10 @@ class WebExporter:
                         && rect.width >= 10 && rect.height >= 10
                         && rect.bottom >= 0 && rect.top <= window.innerHeight + 140;
                     };
-                    const dropdowns = Array.from(document.querySelectorAll('.auxo-picker-dropdown, .sp-range-picker-join-dropdown'))
+                    const dropdowns = Array.from(document.querySelectorAll(
+                      '.auxo-picker-dropdown, .sp-range-picker-join-dropdown, ' +
+                      '.aurora-picker-dropdown, [class*="picker-dropdown"]'
+                    ))
                       .filter(visible);
                     for (const dropdown of dropdowns) {
                       const buttons = Array.from(dropdown.querySelectorAll('button, [role="button"], .sp-picker-range-ok-btn'))

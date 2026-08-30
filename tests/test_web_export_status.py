@@ -1770,6 +1770,7 @@ def test_set_douyin_compass_report_date_accepts_metric_refresh_when_axis_text_is
     exporter._click_douyin_compass_calendar_day_twice = lambda report_date: calls.append(f"click:{report_date}") or state.update(  # type: ignore[method-assign]
         {"signature": (90627.0, 699.0, 3681.65), "picker_open": False}
     ) or True
+    exporter._click_douyin_compass_calendar_confirm = lambda: calls.append("confirm") or True  # type: ignore[attr-defined]
     exporter._wait_until = lambda *args, **kwargs: (_ for _ in ()).throw(TimeoutException("axis unreadable"))  # type: ignore[method-assign]
     exporter._log_step = lambda message: calls.append(message)  # type: ignore[method-assign]
 
@@ -1778,6 +1779,33 @@ def test_set_douyin_compass_report_date_accepts_metric_refresh_when_axis_text_is
     assert calls[:2] == ["open_picker", "click:2026-06-15"]
     assert "图表日期文本未能自动读取" in calls[-2]
     assert calls[-1] == "电商罗盘已选择日期：2026-06-15"
+
+
+def test_set_douyin_compass_report_date_commits_custom_date_before_waiting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    罗盘自定义日期点击后，应先提交日期面板，再等待页面数据切换。
+    """
+    exporter = WebExporter()
+    calls: list[str] = []
+
+    monkeypatch.setattr(
+        "qianiu_auto_report.web_export.DateConfig.default_report_date_str",
+        lambda: "2026-06-16",
+    )
+    exporter._is_douyin_compass_report_date_selected = lambda report_date: False  # type: ignore[method-assign]
+    exporter._douyin_compass_metric_signature = lambda: (1.0, 2.0, 3.0)  # type: ignore[method-assign]
+    exporter._open_douyin_compass_custom_date_picker = lambda: calls.append("open") or True  # type: ignore[method-assign]
+    exporter._is_douyin_compass_custom_date_picker_open = lambda: True  # type: ignore[method-assign]
+    exporter._click_douyin_compass_calendar_day_twice = lambda report_date: calls.append("pick") or True  # type: ignore[method-assign]
+    exporter._click_douyin_compass_calendar_confirm = lambda: calls.append("confirm") or True  # type: ignore[attr-defined]
+    exporter._wait_until = lambda *args, **kwargs: calls.append("wait")  # type: ignore[method-assign]
+    exporter._log_step = lambda message: calls.append(message)  # type: ignore[method-assign]
+
+    exporter._set_douyin_compass_report_date("2026-06-15")
+
+    assert calls[:4] == ["open", "pick", "confirm", "wait"]
 
 
 def test_click_douyin_compass_calendar_day_scopes_lookup_to_picker_panel() -> None:
@@ -1901,6 +1929,40 @@ def test_bring_douyin_after_sale_calendar_month_matches_target_month(
 
     assert exporter._bring_douyin_after_sale_calendar_month_into_view(target) is True
     assert calls == expected_calls
+
+
+def test_click_douyin_after_sale_calendar_day_supports_aurora_picker_panel() -> None:
+    """
+    真实售后工作台使用 aurora-picker 日期面板，应能在其中定位目标日期格。
+    """
+    exporter = WebExporter()
+
+    class _Driver:
+        def execute_script(self, script: str, *_args: object) -> bool:
+            return (
+                ".aurora-picker-panel" in script
+                and ".aurora-picker-date-panel" in script
+                and ".aurora-picker-cell" in script
+            )
+
+    exporter.driver = _Driver()  # type: ignore[assignment]
+
+    assert exporter._click_douyin_after_sale_calendar_day("2026-06-30") is True
+
+
+def test_click_douyin_after_sale_calendar_confirm_supports_aurora_picker_dropdown() -> None:
+    """
+    真实售后工作台的日期确认按钮位于 aurora-picker-dropdown 内。
+    """
+    exporter = WebExporter()
+
+    class _Driver:
+        def execute_script(self, script: str, *_args: object) -> bool:
+            return ".aurora-picker-dropdown" in script
+
+    exporter.driver = _Driver()  # type: ignore[assignment]
+
+    assert exporter._click_douyin_after_sale_calendar_confirm() is True
 
 
 def test_after_sale_workbench_page_readiness_requires_export_action() -> None:
