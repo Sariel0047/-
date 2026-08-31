@@ -327,6 +327,16 @@ class WebExporter:
                 By.XPATH,
                 "//*[@id='wui-page']/div/div[2]/div/div[2]/div/div/div[2]/div/div/div[2]/form/div/div[1]/div/div",
             ),
+            (
+                By.XPATH,
+                "//*[contains(@class,'range-picker')]"
+                "[.//input[contains(@placeholder,'开始') or contains(@placeholder,'起始')]]"
+                "[.//input[contains(@placeholder,'结束') or contains(@placeholder,'截止')]]",
+            ),
+            (
+                By.CSS_SELECTOR,
+                ".next-range-picker",
+            ),
         ),
         "bill_summary_business_dropdown_control": (
             (
@@ -6405,7 +6415,7 @@ class WebExporter:
                 rect = element.rect
                 y = float(rect.get("y", 9999))
                 x = float(rect.get("x", 0))
-                if y > 240:
+                if x < 0 or y < 0:
                     continue
                 candidates.append((y, -x, element))
             except Exception:
@@ -8359,7 +8369,7 @@ class WebExporter:
             if first_clicked and second_clicked and self._is_account_details_date_selected(target_date):
                 return
 
-        if not clicked and not self._set_date_range_inputs(target_date, target_date):
+        if not clicked and not self._set_date_range_inputs(target_date, target_date, scope_label=None):
             raise TimeoutException(f"无法设置账户明细日期：{target_date} ~ {target_date}。")
         self._click_blank_area()
 
@@ -8417,15 +8427,21 @@ class WebExporter:
 
         raise TimeoutException("未找到账户明细页面【搜索】按钮。")
 
-    def _set_date_range_inputs(self, start_date: str, end_date: str) -> bool:
+    def _set_date_range_inputs(
+        self,
+        start_date: str,
+        end_date: str,
+        scope_label: str | None = "申请时间",
+    ) -> bool:
         """
-        使用脚本设置页面内两个日期输入框。
+        使用脚本设置页面内两个日期输入框；可按页面筛选区标签限定范围。
         """
         driver = self._ensure_driver()
         try:
             updated = driver.execute_script(
                 """
-                const [startDate, endDate] = arguments;
+                const [startDate, endDate, rangeLabel] = arguments;
+                const normalize = (value) => String(value || '').replace(/\\s+/g, ' ').trim();
                 const visibleInputs = Array.from(document.querySelectorAll('input'))
                   .filter((el) => el.offsetParent !== null)
                   .map((el) => ({ el, rect: el.getBoundingClientRect() }))
@@ -8433,10 +8449,12 @@ class WebExporter:
                   .sort((a, b) => (a.rect.y - b.rect.y) || (a.rect.x - b.rect.x))
                   .map((item) => item.el);
 
-                const applicationRanges = Array.from(document.querySelectorAll('.next-range-picker'))
-                  .filter((range) => range.offsetParent !== null)
-                  .filter((range) => /申请\\s*时间/.test(String(range.innerText || range.textContent || '')));
-                const scopedInputs = applicationRanges.flatMap((range) =>
+                const allRanges = Array.from(document.querySelectorAll('.next-range-picker, [class*="range-picker"]'))
+                  .filter((range) => range.offsetParent !== null);
+                const matchingRanges = rangeLabel
+                  ? allRanges.filter((range) => normalize(range.innerText || range.textContent || '').includes(rangeLabel))
+                  : allRanges;
+                const scopedInputs = matchingRanges.flatMap((range) =>
                   Array.from(range.querySelectorAll('input')).filter((el) => el.offsetParent !== null)
                 );
                 const candidateInputs = scopedInputs.length >= 2 ? scopedInputs : visibleInputs;
@@ -8452,9 +8470,9 @@ class WebExporter:
 
                 const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
                 const inputFor = (placeholder, fallbackIndex) => {
-                  const liveRanges = Array.from(document.querySelectorAll('.next-range-picker'))
+                  const liveRanges = Array.from(document.querySelectorAll('.next-range-picker, [class*="range-picker"]'))
                     .filter((range) => range.offsetParent !== null)
-                    .filter((range) => /申请\\s*时间/.test(String(range.innerText || range.textContent || '')));
+                    .filter((range) => !rangeLabel || normalize(range.innerText || range.textContent || '').includes(rangeLabel));
                   const liveScopedInputs = liveRanges.flatMap((range) =>
                     Array.from(range.querySelectorAll('input')).filter((el) => el.offsetParent !== null)
                   );
@@ -8508,6 +8526,7 @@ class WebExporter:
                 """,
                 start_date,
                 end_date,
+                scope_label,
             )
             return bool(updated)
         except Exception:
@@ -8564,8 +8583,8 @@ class WebExporter:
                   const rect = el.getBoundingClientRect();
                   if (rect.width < 60 || rect.width > 280) continue;
                   if (rect.height < 18 || rect.height > 80) continue;
-                  if (rect.x < 180 || rect.x > 820) continue;
-                  if (rect.y < 140 || rect.y > 620) continue;
+                  if (rect.x < 0 || rect.x > window.innerWidth) continue;
+                  if (rect.y < 0 || rect.y > window.innerHeight) continue;
                   candidates.push({value, x: rect.x, y: rect.y});
                 }
                 candidates.sort((a, b) => (a.y - b.y) || (a.x - b.x));
@@ -8613,7 +8632,7 @@ class WebExporter:
                 rect = element.rect
                 x = float(rect.get("x", -1))
                 y = float(rect.get("y", -1))
-                if not (180 <= x <= 820 and 140 <= y <= 620):
+                if x < 0 or y < 0:
                     continue
                 filtered.append((y, x, element))
             except Exception:
@@ -8806,7 +8825,7 @@ class WebExporter:
         if self._is_bill_summary_date_selected(report_date):
             return
 
-        if self._set_date_range_inputs(report_date, report_date):
+        if self._set_date_range_inputs(report_date, report_date, scope_label=None):
             self._click_blank_area()
             if self._is_bill_summary_date_selected(report_date):
                 return
@@ -9728,7 +9747,9 @@ class WebExporter:
                 const visible = (el) => {
                   if (!el || el.offsetParent === null) return false;
                   const rect = el.getBoundingClientRect();
-                  return rect.width >= 120 && rect.height >= 16 && rect.x >= 120 && rect.x <= 1180 && rect.y >= 120 && rect.y <= 980;
+                  return rect.width >= 120 && rect.height >= 16
+                    && rect.right >= 0 && rect.left <= window.innerWidth
+                    && rect.bottom >= 0 && rect.top <= window.innerHeight;
                 };
                 const nodes = Array.from(document.querySelectorAll('tr, [role="row"], div, li')).filter(visible);
                 const rows = [];
@@ -9848,7 +9869,9 @@ class WebExporter:
                 const visible = (el) => {
                   if (!el || el.offsetParent === null) return false;
                   const rect = el.getBoundingClientRect();
-                  return rect.width >= 120 && rect.height >= 16 && rect.x >= 80 && rect.x <= 1320 && rect.y >= 120 && rect.y <= 980;
+                  return rect.width >= 120 && rect.height >= 16
+                    && rect.right >= 0 && rect.left <= window.innerWidth
+                    && rect.bottom >= 0 && rect.top <= window.innerHeight;
                 };
                 const rows = Array.from(document.querySelectorAll('tr, [role="row"], div, li'))
                   .filter(visible)

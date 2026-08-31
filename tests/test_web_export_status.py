@@ -701,24 +701,105 @@ def test_set_date_range_inputs_uses_native_input_setter() -> None:
     calls: list[tuple[str, object]] = []
 
     class _Driver:
-        def execute_script(self, script: str, start_date: str, end_date: str) -> bool:
+        def execute_script(
+            self,
+            script: str,
+            start_date: str,
+            end_date: str,
+            scope_label: str | None,
+        ) -> bool:
             calls.append(("script", script))
             calls.append(("dates", (start_date, end_date)))
+            calls.append(("scope", scope_label))
             return True
 
     exporter.driver = _Driver()  # type: ignore[assignment]
 
     assert exporter._set_date_range_inputs("2026-06-07", "2026-06-07") is True
-    assert calls[-1] == ("dates", ("2026-06-07", "2026-06-07"))
+    assert ("dates", ("2026-06-07", "2026-06-07")) in calls
+    assert ("scope", "申请时间") in calls
     script = str(calls[0][1])
     assert "HTMLInputElement.prototype" in script
     assert "InputEvent" in script
     assert "new Event('change'" in script
     assert "next-range-picker" in script
-    assert "申请" in script
+    assert "rangeLabel" in script
     assert "起始日期" in script
     assert "结束日期" in script
     assert "inputFor" in script
+
+
+def test_set_date_range_inputs_accepts_page_specific_scope_label() -> None:
+    """收支账单可指定自身筛选区，不能被退款管理的“申请时间”范围绑死。"""
+    exporter = WebExporter()
+    calls: list[tuple[str, object]] = []
+
+    class _Driver:
+        def execute_script(self, script: str, *_args: object) -> bool:
+            calls.append(("script", script))
+            return True
+
+    exporter.driver = _Driver()  # type: ignore[assignment]
+
+    assert exporter._set_date_range_inputs(  # type: ignore[call-arg]
+        "2026-08-27",
+        "2026-08-27",
+        scope_label="收支账单",
+    ) is True
+    assert "rangeLabel" in str(calls[0][1])
+
+
+def test_open_bill_summary_date_picker_accepts_wide_window_control(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Windows 宽窗口中日期控件横坐标超过 820 时仍应可点击。"""
+    exporter = WebExporter()
+    clicks: list[str] = []
+
+    monkeypatch.setattr("qianiu_auto_report.web_export.time.sleep", lambda _seconds: None)
+
+    class _WideDateControl(_ClickableElement):
+        rect = {"x": 1040, "y": 260}
+
+        def __init__(self) -> None:
+            super().__init__(text="2026-08-27", clicks=clicks, name="wide-date-control")
+
+    class _Driver:
+        def find_elements(self, by: str, value: str) -> list[_FakeElement]:
+            if by == By.XPATH and "string-length(normalize-space())=10" in value:
+                return [_WideDateControl()]
+            return []
+
+    exporter.driver = _Driver()  # type: ignore[assignment]
+    exporter._try_click_selector = lambda _key: False  # type: ignore[method-assign]
+
+    assert exporter._open_bill_summary_date_picker() is True
+    assert clicks == ["wide-date-control"]
+
+
+def test_qianniu_data_day_button_accepts_responsive_header_below_240(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Windows 缩放令顶部区域下移时，千牛数据页的“日”按钮仍应可点击。"""
+    exporter = WebExporter()
+    clicks: list[str] = []
+
+    monkeypatch.setattr("qianiu_auto_report.web_export.time.sleep", lambda _seconds: None)
+
+    class _DayButton(_FakeElement):
+        rect = {"x": 460, "y": 310}
+
+    class _Driver:
+        def find_elements(self, by: str, value: str) -> list[_FakeElement]:
+            if by == By.XPATH and "normalize-space()='日'" in value:
+                return [_DayButton(text="日")]
+            return []
+
+    exporter.driver = _Driver()  # type: ignore[assignment]
+    exporter._click_with_retry = lambda _element: clicks.append("日")  # type: ignore[method-assign]
+
+    assert exporter._click_qianniu_data_day_button() is True
+    assert clicks == ["日"]
 
 
 def test_visible_calendar_months_support_next_range_picker_headers() -> None:
