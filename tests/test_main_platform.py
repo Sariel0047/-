@@ -13,11 +13,32 @@ from main import (
     collect_attached_browser_platform_urls,
     collect_platform_metrics,
     collect_platform_metrics_batch,
+    export_data,
     process_data,
     resolve_startup_mode,
     resolve_target_platform,
     write_business_finance_reports,
 )
+
+
+def test_export_data_passes_selected_report_date_to_web_exporter(tmp_path: Path) -> None:
+    """
+    淘宝网页导出应使用用户选择的报表日期设置申请时间范围。
+    """
+
+    class _FakeExporter:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, object]] = []
+
+        def export_report(self, **kwargs: object) -> Path:
+            self.calls.append(kwargs)
+            return tmp_path / "refund.xlsx"
+
+    exporter = _FakeExporter()
+    result = export_data(exporter, tmp_path, report_date="2026-08-31")
+
+    assert result == tmp_path / "refund.xlsx"
+    assert exporter.calls == [{"download_dir": tmp_path, "report_date": date(2026, 8, 31)}]
 
 
 def test_resolve_target_platform_prefers_explicit_selection() -> None:

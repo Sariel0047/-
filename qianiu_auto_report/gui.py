@@ -962,7 +962,10 @@ class AppGUI:
                     )
                     metrics_list = [metrics]
             else:
-                exported_file = self.web_exporter.export_after_login(download_dir=download_dir)
+                exported_file = self.web_exporter.export_after_login(
+                    download_dir=download_dir,
+                    report_date=report_date,
+                )
                 self.root.after(0, self.append_log, "我已经把退款明细下载好了。")
                 metrics = self.web_exporter.collect_business_finance_metrics(
                     download_dir=download_dir,

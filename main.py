@@ -162,11 +162,18 @@ def build_output_paths() -> dict[str, Path]:
     }
 
 
-def export_data(web_exporter: "WebExporter", download_dir: Path) -> Path:
+def export_data(
+    web_exporter: "WebExporter",
+    download_dir: Path,
+    report_date: date | datetime | str | None = None,
+) -> Path:
     """
     调用网页导出模块导出原始数据。
     """
-    exported_file = web_exporter.export_report(download_dir=download_dir)
+    export_kwargs: dict[str, object] = {"download_dir": download_dir}
+    if report_date is not None:
+        export_kwargs["report_date"] = normalize_report_date(report_date)
+    exported_file = web_exporter.export_report(**export_kwargs)
     if not isinstance(exported_file, Path):
         raise TypeError("web_export.export_report 必须返回 Path 对象。")
     return exported_file
@@ -437,6 +444,7 @@ def run_pipeline(report_date: date | datetime | str | None = None) -> bool:
             exported_file = export_data(
                 web_exporter=web_exporter,
                 download_dir=paths["download_dir"],
+                report_date=selected_report_date,
             )
             print(f"退款管理导出文件：{exported_file}")
 

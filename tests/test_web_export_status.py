@@ -714,6 +714,133 @@ def test_set_date_range_inputs_uses_native_input_setter() -> None:
     assert "HTMLInputElement.prototype" in script
     assert "InputEvent" in script
     assert "new Event('change'" in script
+    assert "next-range-picker" in script
+    assert "申请" in script
+    assert "起始日期" in script
+    assert "结束日期" in script
+    assert "inputFor" in script
+
+
+def test_visible_calendar_months_support_next_range_picker_headers() -> None:
+    """
+    淘宝申请时间面板使用 next-calendar-panel-header 时也应能读取月份。
+    """
+    exporter = WebExporter()
+
+    class _Driver:
+        def execute_script(self, script: str) -> list[list[int]]:
+            assert "next-calendar-panel-header" in script
+            return [[2026, 5], [2026, 6]]
+
+    exporter.driver = _Driver()  # type: ignore[assignment]
+
+    assert exporter._visible_calendar_month_indexes() == [2026 * 12 + 5, 2026 * 12 + 6]
+
+
+def test_taobao_after_sale_application_date_range_uses_previous_month_same_day() -> None:
+    """
+    淘宝售后单查询的申请时间应覆盖报表日及其前一个月同日。
+    """
+    exporter = WebExporter()
+
+    assert exporter._taobao_after_sale_application_date_range("2026-08-31") == (
+        "2026-07-31",
+        "2026-08-31",
+    )
+
+
+def test_set_taobao_after_sale_application_date_range_rejects_stale_page_values() -> None:
+    """
+    页面只更新一个日期输入时，淘宝申请时间设置不得报告成功。
+    """
+    exporter = WebExporter()
+    exporter._set_date_range_inputs = lambda start, end: True  # type: ignore[method-assign]
+    exporter._is_taobao_after_sale_application_date_range_selected = (  # type: ignore[method-assign]
+        lambda start, end: False
+    )
+    exporter._set_taobao_after_sale_application_date_range_via_picker = lambda start, end: False  # type: ignore[method-assign]
+
+    assert exporter._set_taobao_after_sale_application_date_range("2026-08-31") is False
+
+
+def test_set_taobao_after_sale_application_date_range_falls_back_to_calendar_picker() -> None:
+    """
+    直接写入受控输入失败时，应通过日期面板选择起止日期后再确认。
+    """
+    exporter = WebExporter()
+    calls: list[tuple[str, object]] = []
+    exporter._set_date_range_inputs = lambda start, end: False  # type: ignore[method-assign]
+    exporter._open_taobao_after_sale_application_date_picker = lambda: calls.append(("open", "")) or True  # type: ignore[method-assign]
+    exporter._click_calendar_day = lambda target: calls.append(("day", target)) or True  # type: ignore[method-assign]
+    exporter._click_taobao_after_sale_application_calendar_confirm = lambda: calls.append(("confirm", "")) or True  # type: ignore[method-assign]
+    exporter._is_taobao_after_sale_application_date_range_selected = lambda start, end: True  # type: ignore[method-assign]
+
+    assert exporter._set_taobao_after_sale_application_date_range("2026-08-31") is True
+    assert calls == [
+        ("open", ""),
+        ("day", "2026-07-31"),
+        ("day", "2026-08-31"),
+        ("confirm", ""),
+    ]
+
+
+def test_set_export_conditions_uses_default_report_date_for_application_range(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    未传报表日期时，申请时间范围仍应按默认报表日期计算。
+    """
+    exporter = WebExporter()
+    calls: list[tuple[str, object]] = []
+
+    monkeypatch.setattr(
+        "qianiu_auto_report.web_export.DateConfig.default_report_date_str",
+        lambda: "2026-08-31",
+    )
+    exporter._open_combined_query = lambda: None  # type: ignore[method-assign]
+    exporter._select_after_sale_status = lambda status: None  # type: ignore[method-assign]
+    exporter._set_taobao_after_sale_application_date_range = lambda report_date: calls.append(("date_range", report_date)) or True  # type: ignore[method-assign]
+    exporter.driver = type("Driver", (), {"execute_script": lambda self, script: None})()  # type: ignore[assignment]
+
+    exporter.set_export_conditions()
+
+    assert ("date_range", "2026-08-31") in calls
+
+
+def test_set_export_conditions_sets_taobao_application_date_range_for_report_date() -> None:
+    """
+    淘宝售后条件设置应在查询前应用申请时间范围。
+    """
+    exporter = WebExporter()
+    calls: list[tuple[str, object]] = []
+
+    exporter._open_combined_query = lambda: None  # type: ignore[method-assign]
+    exporter._select_after_sale_status = lambda status: None  # type: ignore[method-assign]
+    exporter._set_taobao_after_sale_application_date_range = lambda report_date: calls.append(("date_range", report_date)) or True  # type: ignore[method-assign]
+    exporter.driver = type("Driver", (), {"execute_script": lambda self, script: None})()  # type: ignore[assignment]
+
+    exporter.set_export_conditions(report_date="2026-08-31")
+
+    assert ("date_range", "2026-08-31") in calls
+
+
+def test_trigger_export_accepts_new_export_button_label() -> None:
+    """
+    淘宝退款管理新版按钮文案为“导出”时，仍应能触发导出任务。
+    """
+    exporter = WebExporter()
+    calls: list[tuple[str, object]] = []
+
+    exporter._close_corner_popup_if_present = lambda: None  # type: ignore[method-assign]
+    exporter._try_click_selector = lambda selector_key, timeout_seconds=None: (  # type: ignore[method-assign]
+        calls.append(("selector", selector_key)) or selector_key == "search_button"
+    )
+    exporter._click_by_text = lambda texts: calls.append(("text", texts)) or "导出" in texts  # type: ignore[method-assign]
+    exporter._submit_batch_export_task = lambda: 123.0  # type: ignore[method-assign]
+    exporter._log_step = lambda message: None  # type: ignore[method-assign]
+
+    assert exporter.trigger_export() == 123.0
+    assert ("text", ("批量导出", "导出")) in calls
 
 
 def test_account_details_visible_rows_must_match_target_date() -> None:
@@ -1499,6 +1626,54 @@ def test_collect_promotion_fee_uses_explicit_report_date(
     assert calls.index(("set_date", "2026-06-07")) < calls.index("extract")
 
 
+def test_set_promotion_report_date_falls_back_to_date_scoped_report_url() -> None:
+    """
+    日期弹层未能稳定落位时，应通过带 startTime/endTime 的报表 URL 重新加载单日数据。
+    """
+    exporter = WebExporter()
+
+    class Driver:
+        def __init__(self) -> None:
+            self.current_url = "https://one.alimama.com/index.html#!/report/crowd?rptType=crowd"
+            self.navigated_urls: list[str] = []
+
+        def get(self, url: str) -> None:
+            self.navigated_urls.append(url)
+            self.current_url = url
+
+    driver = Driver()
+    exporter.driver = driver  # type: ignore[assignment]
+    exporter._get_promotion_period_display_text = lambda: "过去 7 天"  # type: ignore[method-assign]
+    exporter._click_visible_xpath_candidates = lambda _xpaths: False  # type: ignore[method-assign]
+    exporter._click_promotion_period_control_by_js = lambda: False  # type: ignore[method-assign]
+    exporter._try_click_selector = lambda _key: False  # type: ignore[method-assign]
+    exporter._promotion_pause = lambda _seconds: None  # type: ignore[method-assign]
+    exporter._click_blank_area = lambda: None  # type: ignore[method-assign]
+    exporter._wait_dom_ready = lambda: None  # type: ignore[method-assign]
+    exporter._close_corner_popup_if_present = lambda: None  # type: ignore[method-assign]
+    exporter._is_promotion_report_date_target = lambda target: target in driver.current_url  # type: ignore[method-assign]
+
+    exporter._set_promotion_report_date("2026-08-29")
+
+    assert driver.navigated_urls == [
+        "https://one.alimama.com/index.html#!/report/crowd?rptType=crowd"
+        "&isRequestedQztDefaultSet=1&startTime=2026-08-29&endTime=2026-08-29"
+    ]
+
+
+def test_set_promotion_report_date_uses_yesterday_shortcut_for_default_day() -> None:
+    """推广页默认报表日优先选择“昨天/昨日”，并由快捷项内部校验具体日期。"""
+    exporter = WebExporter()
+    calls: list[str] = []
+    target = exporter._format_report_date(None)
+
+    exporter._set_promotion_period_yesterday = lambda: calls.append("yesterday")  # type: ignore[method-assign]
+
+    exporter._set_promotion_report_date(target)
+
+    assert calls == ["yesterday"]
+
+
 def test_collect_business_finance_metrics_passes_report_date_to_promotion() -> None:
     """
     淘宝整店采集应把报表日期继续传递给推广费用采集。
@@ -2022,11 +2197,11 @@ def test_select_douyin_after_sale_date_shortcut_uses_right_side_quick_select() -
     assert clicks == ["date-shortcut", "yesterday-option"]
 
 
-def test_set_douyin_after_sale_export_conditions_uses_yesterday_shortcut_for_default_date(
+def test_set_douyin_after_sale_export_conditions_uses_custom_day_for_default_date(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """
-    报表日期为默认昨天时，售后工作台应继续使用右侧快捷框选择“昨日”。
+    报表日期为默认昨天时，售后工作台也必须选择具体的单日日期。
     """
     exporter = WebExporter()
     calls: list[tuple[str, object]] = []
@@ -2042,11 +2217,11 @@ def test_set_douyin_after_sale_export_conditions_uses_yesterday_shortcut_for_def
     exporter._set_douyin_after_sale_custom_single_day = lambda report_date: calls.append(("custom", report_date)) or True  # type: ignore[method-assign]
     exporter._log_step = lambda message: calls.append(("log", message))  # type: ignore[method-assign]
 
-    exporter._set_douyin_after_sale_export_conditions(report_date="2026-06-16")
+    exporter._set_douyin_after_sale_export_conditions()
 
     assert ("date_field", "完结时间") in calls
-    assert ("shortcut", "昨日") in calls
-    assert not any(call[0] == "custom" for call in calls)
+    assert ("custom", "2026-06-16") in calls
+    assert not any(call[0] == "shortcut" for call in calls)
 
 
 def test_set_douyin_after_sale_export_conditions_uses_custom_day_for_non_default_date(

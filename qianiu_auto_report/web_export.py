@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import calendar
 import json
 import os
 import re
@@ -237,6 +238,7 @@ class WebExporter:
         ),
         "batch_export_button": (
             (By.CSS_SELECTOR, "button[data-testid='batch-export']"),
+            (By.CSS_SELECTOR, "#guide_export_link"),
             (By.CSS_SELECTOR, "button[aria-label='批量导出']"),
             (By.CSS_SELECTOR, "button[title='批量导出']"),
             (By.XPATH, "//button[normalize-space()='批量导出']"),
@@ -244,6 +246,10 @@ class WebExporter:
                 By.XPATH,
                 "//*[self::button or self::a or self::span][contains(normalize-space(),'批量导出')]",
             ),
+            (By.CSS_SELECTOR, "button[aria-label='导出']"),
+            (By.CSS_SELECTOR, "button[title='导出']"),
+            (By.XPATH, "//button[normalize-space()='导出']"),
+            (By.XPATH, "//*[self::button or self::a or self::span][normalize-space()='导出']"),
         ),
         "generate_report_button": (
             (By.CSS_SELECTOR, "button[data-testid='generate-report']"),
@@ -1011,7 +1017,7 @@ class WebExporter:
         # 文案兜底：新版页面在不同账户下 class 变化较大，但文本相对稳定
         has_query_text = self._page_contains_text("售后单查询")
         has_search_text = self._page_contains_text("搜索售后单")
-        has_export_text = self._page_contains_text("批量导出")
+        has_export_text = self._page_contains_text("批量导出") or self._page_contains_text("导出")
         return has_query_text and (has_search_text or has_export_text)
 
     def _wait_for_export_controls(self, timeout_seconds: float = 6.0) -> bool:
@@ -2915,11 +2921,31 @@ class WebExporter:
         except Exception:
             return False
 
+    def _promotion_report_date_url(self, report_date: str) -> str:
+        """
+        构造带单日起止参数的人群报表地址，作为日期弹层失效时的兜底。
+        """
+        target = self._format_report_date(report_date)
+        return (
+            f"{self.PROMOTION_CROWD_REPORT_URL}"
+            f"&isRequestedQztDefaultSet=1&startTime={target}&endTime={target}"
+        )
+
     def _set_promotion_report_date(self, report_date: date | datetime | str | None = None) -> None:
         """
         设置人群报表数据汇总周期为指定单日。
         """
         target = self._format_report_date(report_date)
+
+        # 默认报表日对应万相台的“昨天/昨日”快捷项；该快捷项会同时更新
+        # 起止日期，优先使用可见性更稳定的快捷路径，失败再走自定义范围。
+        if target == DateConfig.default_report_date_str():
+            try:
+                self._set_promotion_period_yesterday()
+                return
+            except TimeoutException:
+                self._log_step("人群报表快捷项“昨天/昨日”未生效，改用自定义日期")
+
         current_period_text = self._get_promotion_period_display_text()
         self._log_step(f"人群报表当前数据汇总周期控件值：{current_period_text or '<未识别>'}")
 
@@ -2990,6 +3016,25 @@ class WebExporter:
 
         if self._is_promotion_report_date_target(target):
             self._log_step(f"周期控件未稳定识别，但页面日期已是 {target}，继续后续读取")
+            return
+
+        # 新版万相台偶发无法通过弹层同步起止输入框，直接带日期参数重载可避免
+        # 页面停留在“过去 7 天”而日志误报成功。
+        fallback_url = self._promotion_report_date_url(target)
+        self._log_step(f"日期弹层未生效，直达单日报表：{target}")
+        try:
+            self._navigate_to_url(fallback_url)
+            self._promotion_pause(1.2)
+            self._wait_until(
+                lambda: self._is_promotion_report_date_target(target),
+                timeout_seconds=max(self.timeout_seconds, 12),
+                message=f"直达单日报表后日期未切换到：{target}",
+                selector_keys=("promotion_summary_period_control",),
+            )
+        except TimeoutException:
+            self._log_step(f"直达单日报表后仍未观测到目标日期：{target}")
+        else:
+            self._log_step(f"人群报表已通过地址选择数据汇总周期：{target}")
             return
 
         self._raise_timeout_with_context(
@@ -5295,15 +5340,6 @@ class WebExporter:
                 selector_keys=("douyin_after_sale_query_button",),
             )
         self._log_step("售后工作台已选择日期字段：完结时间")
-
-        if report_date_str == DateConfig.default_report_date_str():
-            if not self._select_douyin_after_sale_date_shortcut("昨日"):
-                self._raise_timeout_with_context(
-                    "售后工作台未能选择日期范围：昨日",
-                    selector_keys=("douyin_after_sale_query_button",),
-                )
-            self._log_step("售后工作台已选择日期：昨日")
-            return
 
         if not self._set_douyin_after_sale_custom_single_day(report_date_str):
             self._raise_timeout_with_context(
@@ -8397,19 +8433,43 @@ class WebExporter:
                   .sort((a, b) => (a.rect.y - b.rect.y) || (a.rect.x - b.rect.x))
                   .map((item) => item.el);
 
-                const dateLikeInputs = visibleInputs.filter((el) => {
+                const applicationRanges = Array.from(document.querySelectorAll('.next-range-picker'))
+                  .filter((range) => range.offsetParent !== null)
+                  .filter((range) => /申请\\s*时间/.test(String(range.innerText || range.textContent || '')));
+                const scopedInputs = applicationRanges.flatMap((range) =>
+                  Array.from(range.querySelectorAll('input')).filter((el) => el.offsetParent !== null)
+                );
+                const candidateInputs = scopedInputs.length >= 2 ? scopedInputs : visibleInputs;
+                const dateLikeInputs = candidateInputs.filter((el) => {
                   const text = `${el.value || ''} ${el.placeholder || ''}`;
                   return /\\d{4}-\\d{2}-\\d{2}/.test(text)
-                    || ['开始', '结束'].includes(String(el.placeholder || '').trim());
+                    || ['开始', '结束', '起始日期', '结束日期'].includes(String(el.placeholder || '').trim());
                 });
 
                 if (dateLikeInputs.length < 2) {
                   return false;
                 }
 
-                const target = [dateLikeInputs[0], dateLikeInputs[1]];
                 const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
-                const fireInput = (el, value) => {
+                const inputFor = (placeholder, fallbackIndex) => {
+                  const liveRanges = Array.from(document.querySelectorAll('.next-range-picker'))
+                    .filter((range) => range.offsetParent !== null)
+                    .filter((range) => /申请\\s*时间/.test(String(range.innerText || range.textContent || '')));
+                  const liveScopedInputs = liveRanges.flatMap((range) =>
+                    Array.from(range.querySelectorAll('input')).filter((el) => el.offsetParent !== null)
+                  );
+                  const liveCandidates = liveScopedInputs.length >= 2 ? liveScopedInputs :
+                    Array.from(document.querySelectorAll('input'))
+                      .filter((el) => el.offsetParent !== null)
+                      .filter((el) => /\\d{4}-\\d{2}-\\d{2}/.test(`${el.value || ''} ${el.placeholder || ''}`)
+                        || ['开始', '结束', '起始日期', '结束日期'].includes(String(el.placeholder || '').trim()));
+                  return liveCandidates.find((el) => String(el.placeholder || '').trim() === placeholder)
+                    || liveCandidates[fallbackIndex]
+                    || null;
+                };
+                const fireInput = (placeholder, fallbackIndex, value) => {
+                  const el = inputFor(placeholder, fallbackIndex);
+                  if (!el) return false;
                   el.focus();
                   if (setter) {
                     setter.call(el, '');
@@ -8435,12 +8495,16 @@ class WebExporter:
                   el.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'Enter', code: 'Enter' }));
                   el.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true, key: 'Enter', code: 'Enter' }));
                   el.blur();
+                  return true;
                 };
 
-                fireInput(target[0], startDate);
-                fireInput(target[1], endDate);
+                if (!fireInput('起始日期', 0, startDate)) return false;
+                if (!fireInput('结束日期', 1, endDate)) return false;
 
-                return true;
+                const finalStart = inputFor('起始日期', 0);
+                const finalEnd = inputFor('结束日期', 1);
+                return !!finalStart && !!finalEnd
+                  && finalStart.value === startDate && finalEnd.value === endDate;
                 """,
                 start_date,
                 end_date,
@@ -8624,11 +8688,6 @@ class WebExporter:
                 try:
                     if not element.is_displayed() or not element.is_enabled():
                         continue
-                    rect = element.rect
-                    x = float(rect.get("x", -1))
-                    y = float(rect.get("y", -1))
-                    if not (0 <= x <= 980 and 180 <= y <= 920):
-                        continue
                     self._click_with_retry(element)
                     return True
                 except Exception:
@@ -8652,12 +8711,28 @@ class WebExporter:
                   document.querySelectorAll(
                     '.next-date-picker2-overlay[aria-hidden="false"] .next-calendar2-header, ' +
                     '.next-date-picker2-overlay .next-calendar2-header, ' +
-                    '.next-calendar2-header'
+                    '.next-calendar2-header, .next-calendar-panel-header'
                   )
                 ).filter(visible);
                 const result = [];
                 const seen = new Set();
                 for (const header of headers) {
+                  const monthButtons = Array.from(header.querySelectorAll('button[title$="月"]'));
+                  for (const monthButton of monthButtons) {
+                    const side = monthButton.closest('.next-calendar-panel-header-left, .next-calendar-panel-header-right') || header;
+                    const yearButton = side.querySelector('button[title^="20"]');
+                    const yearText = yearButton ? String(yearButton.getAttribute('title') || '') : '';
+                    const monthText = String(monthButton.getAttribute('title') || '');
+                    const monthNumber = {
+                      '一月': 1, '二月': 2, '三月': 3, '四月': 4, '五月': 5, '六月': 6,
+                      '七月': 7, '八月': 8, '九月': 9, '十月': 10, '十一月': 11, '十二月': 12,
+                    }[monthText];
+                    if (!yearText || !monthNumber) continue;
+                    const key = `${yearText}-${monthNumber}`;
+                    if (seen.has(key)) continue;
+                    seen.add(key);
+                    result.push([Number(yearText), monthNumber]);
+                  }
                   const text = String(header.innerText || header.textContent || '').replace(/\\s+/g, '');
                   const match = text.match(/(\\d{4})年(\\d{1,2})月/);
                   if (!match) continue;
@@ -8702,7 +8777,9 @@ class WebExporter:
         """
         driver = self._ensure_driver()
         icon_class = "next-icon-arrow-left" if direction == "prev" else "next-icon-arrow-right"
+        nav_title = "上个月" if direction == "prev" else "下个月"
         xpaths = (
+            f"//div[contains(@class,'next-calendar-panel-header')]//button[@title='{nav_title}']",
             "//*[contains(@class,'next-date-picker2-overlay') and not(@aria-hidden='true')]"
             f"//button[.//*[contains(concat(' ', normalize-space(@class), ' '), ' {icon_class} ')]]",
             f"//button[.//*[contains(concat(' ', normalize-space(@class), ' '), ' {icon_class} ')]]",
@@ -8715,11 +8792,6 @@ class WebExporter:
             for button in buttons:
                 try:
                     if not button.is_displayed() or not button.is_enabled():
-                        continue
-                    rect = button.rect
-                    x = float(rect.get("x", -1))
-                    y = float(rect.get("y", -1))
-                    if not (0 <= x <= 980 and 180 <= y <= 920):
                         continue
                     self._click_with_retry(button)
                     return True
@@ -11141,11 +11213,13 @@ class WebExporter:
         after_sale_status: Optional[str] = None,
         after_sale_statuses: Optional[tuple[str, ...]] = None,
         use_combined_query: bool = True,
+        report_date: date | datetime | str | None = None,
         **kwargs,
     ) -> None:
         """
         设置导出条件，默认售后状态为“退款成功”。
         """
+        report_date_str = self._format_report_date(report_date)
         statuses: list[str] = []
         if after_sale_statuses:
             statuses.extend(list(after_sale_statuses))
@@ -11166,11 +11240,167 @@ class WebExporter:
         driver = self._ensure_driver()
         driver.execute_script("document.body.click();")
 
+        if not self._set_taobao_after_sale_application_date_range(report_date_str):
+            start_date, end_date = self._taobao_after_sale_application_date_range(report_date_str)
+            self._raise_timeout_with_context(
+                f"无法设置售后单申请时间：{start_date} ~ {end_date}",
+                selector_keys=("search_button",),
+            )
+
         _ = kwargs
+
+    @staticmethod
+    def _taobao_after_sale_application_date_range(
+        report_date: date | datetime | str | None = None,
+    ) -> tuple[str, str]:
+        """
+        计算淘宝售后单查询的申请时间范围：报表日及其前一个月同日。
+        """
+        target = datetime.strptime(
+            WebExporter._format_report_date(report_date),
+            DateConfig.DATE_FORMAT,
+        ).date()
+        month = target.month - 1
+        year = target.year
+        if month == 0:
+            year -= 1
+            month = 12
+        previous_day = min(target.day, calendar.monthrange(year, month)[1])
+        start = date(year, month, previous_day)
+        return start.strftime(DateConfig.DATE_FORMAT), target.strftime(DateConfig.DATE_FORMAT)
+
+    def _set_taobao_after_sale_application_date_range(
+        self,
+        report_date: date | datetime | str | None = None,
+    ) -> bool:
+        """
+        设置淘宝退款管理页面“申请时间”的起止时间。
+        """
+        start_date, end_date = self._taobao_after_sale_application_date_range(report_date)
+        updated = self._set_date_range_inputs(
+            f"{start_date} 00:00:00",
+            f"{end_date} 23:59:59",
+        )
+        if updated and self._is_taobao_after_sale_application_date_range_selected(
+            start_date,
+            end_date,
+        ):
+            self._log_step(f"退款管理已设置申请时间：{start_date} ~ {end_date}")
+            return True
+        if self._set_taobao_after_sale_application_date_range_via_picker(start_date, end_date):
+            if self._is_taobao_after_sale_application_date_range_selected(start_date, end_date):
+                self._log_step(f"退款管理已设置申请时间：{start_date} ~ {end_date}")
+                return True
+        return False
+
+    def _set_taobao_after_sale_application_date_range_via_picker(
+        self,
+        start_date: str,
+        end_date: str,
+    ) -> bool:
+        """
+        通过淘宝原生日期面板选择申请时间起止日期。
+        """
+        if not self._open_taobao_after_sale_application_date_picker():
+            return False
+        if not self._click_calendar_day(start_date):
+            return False
+        time.sleep(max(self.ui_poll_interval_seconds, 0.12))
+        if not self._click_calendar_day(end_date):
+            return False
+        return self._click_taobao_after_sale_application_calendar_confirm()
+
+    def _open_taobao_after_sale_application_date_picker(self) -> bool:
+        """
+        打开淘宝退款管理页面的申请时间日期面板。
+        """
+        driver = self._ensure_driver()
+        try:
+            visible_panel = driver.find_elements(By.CSS_SELECTOR, ".next-calendar-range")
+            if any(panel.is_displayed() for panel in visible_panel):
+                return True
+        except Exception:
+            pass
+        selectors = (
+            ".next-range-picker input[placeholder='起始日期']",
+            ".next-range-picker .next-range-picker-trigger",
+        )
+        for selector in selectors:
+            try:
+                elements = driver.find_elements(By.CSS_SELECTOR, selector)
+            except Exception:
+                continue
+            for element in elements:
+                try:
+                    if not element.is_displayed() or not element.is_enabled():
+                        continue
+                    self._click_with_retry(element)
+                    time.sleep(max(self.ui_poll_interval_seconds, 0.12))
+                    panels = driver.find_elements(By.CSS_SELECTOR, ".next-calendar-range")
+                    if any(panel.is_displayed() for panel in panels):
+                        return True
+                except (StaleElementReferenceException, WebDriverException):
+                    continue
+        return False
+
+    def _click_taobao_after_sale_application_calendar_confirm(self) -> bool:
+        """
+        点击淘宝申请时间日期面板的【确定】按钮。
+        """
+        driver = self._ensure_driver()
+        xpaths = (
+            "//*[contains(@class,'next-overlay-inner') and contains(@class,'next-range-picker-body')]"
+            "//button[normalize-space()='确定']",
+            "//*[contains(@class,'next-calendar-range')]/following::button[normalize-space()='确定'][1]",
+        )
+        for xpath in xpaths:
+            try:
+                buttons = driver.find_elements(By.XPATH, xpath)
+            except Exception:
+                continue
+            for button in buttons:
+                try:
+                    if not button.is_displayed() or not button.is_enabled():
+                        continue
+                    self._click_with_retry(button)
+                    time.sleep(max(self.ui_poll_interval_seconds, 0.12))
+                    return True
+                except (StaleElementReferenceException, WebDriverException):
+                    continue
+        return self._click_text_with_wait(("确定",), exact=True, timeout_seconds=2.0, required=False)
+
+    def _is_taobao_after_sale_application_date_range_selected(
+        self,
+        start_date: str,
+        end_date: str,
+    ) -> bool:
+        """
+        校验淘宝申请时间控件的两个输入都已更新到目标日期。
+        """
+        driver = self._ensure_driver()
+        try:
+            values = driver.execute_script(
+                """
+                const range = Array.from(document.querySelectorAll('.next-range-picker'))
+                  .filter((el) => el.offsetParent !== null)
+                  .find((el) => /申请\\s*时间/.test(String(el.innerText || el.textContent || '')));
+                if (!range) return null;
+                const start = range.querySelector('input[placeholder="起始日期"]');
+                const end = range.querySelector('input[placeholder="结束日期"]');
+                return { start: start ? String(start.value || '') : '', end: end ? String(end.value || '') : '' };
+                """,
+            )
+        except Exception:
+            return False
+        if not isinstance(values, dict):
+            return False
+        return str(values.get("start", "")) == f"{start_date} 00:00:00" and str(
+            values.get("end", "")
+        ) == f"{end_date} 23:59:59"
 
     def trigger_export(self) -> float:
         """
-        点击搜索并触发批量导出，返回触发时间戳。
+        点击搜索并触发退款报表导出，返回触发时间戳。
         """
         self._close_corner_popup_if_present()
 
@@ -11181,11 +11411,11 @@ class WebExporter:
 
         self._close_corner_popup_if_present()
 
-        export_ok = self._try_click_selector("batch_export_button") or self._click_by_text(("批量导出",))
+        export_ok = self._try_click_selector("batch_export_button") or self._click_by_text(("批量导出", "导出"))
         if not export_ok:
-            raise TimeoutException("未找到【批量导出】按钮。")
+            raise TimeoutException("未找到【导出】按钮。")
 
-        # 新版导出链路：批量导出 -> 生成报表 -> 确认 -> 导出列表 -> 下载退款单报表
+        # 导出链路：导出 -> 生成报表 -> 确认 -> 导出列表 -> 下载退款单报表
         return self._submit_batch_export_task()
 
     def wait_for_download(
