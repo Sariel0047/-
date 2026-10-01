@@ -2347,6 +2347,36 @@ def test_select_douyin_after_sale_date_field_supports_aurora_option() -> None:
     assert clicks == ["aurora-field", "aurora-option"]
 
 
+def test_select_douyin_after_sale_field_option_supports_aurora_status_control() -> None:
+    """新版售后状态控件使用 aurora-select-content/item-option。"""
+    exporter = WebExporter()
+    clicks: list[str] = []
+
+    class _AuroraStatusDriver:
+        def __init__(self) -> None:
+            self.field = _ClickableElement("全部", clicks=clicks, name="status-field")
+            self.option = _ClickableElement("退款成功", clicks=clicks, name="refund-success")
+
+        def find_elements(self, by: str, value: str) -> list[_FakeElement]:
+            if by != By.XPATH:
+                return []
+            if "aurora-select-content" in value:
+                return [self.field]
+            if "aurora-select-item-option" in value:
+                return [self.option]
+            return []
+
+        def execute_script(self, *_args: object) -> None:
+            return None
+
+    exporter.driver = _AuroraStatusDriver()  # type: ignore[assignment]
+    exporter._promotion_pause = lambda scale=1.0: None  # type: ignore[method-assign]
+    exporter._click_text_with_wait = lambda *args, **kwargs: False  # type: ignore[method-assign]
+
+    assert exporter._select_douyin_after_sale_field_option("售后状态", "退款成功") is True
+    assert clicks == ["status-field", "refund-success"]
+
+
 def test_click_douyin_after_sale_more_filters_waits_for_date_control(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2646,6 +2676,32 @@ def test_collect_douyin_all_shop_metrics_switches_unvisited_shops() -> None:
         ("collect", ("高品专业女裤", False)),
         ("switch", ("高品质裙裤", "咚咚源头女装", "高品专业女裤")),
     ]
+
+
+def test_normalize_douyin_shop_name_ignores_store_type_and_business_status() -> None:
+    """首页店铺名可能带“个体店/正常营业”，切换列表名称不带这些后缀。"""
+    assert WebExporter._normalize_douyin_shop_name("高品质裙裤 个体店 正常营业") == "高品质裙裤"
+    assert WebExporter._normalize_douyin_shop_name("高品质裙裤") == "高品质裙裤"
+
+
+def test_collect_douyin_all_shop_metrics_stops_when_switch_name_is_same_store() -> None:
+    """首页带类型后缀的店铺与切换列表主体名相同，不应生成第二份报表。"""
+    exporter = WebExporter()
+    collected = ["高品质裙裤 个体店 正常营业", "高品质裙裤"]
+    switches = ["高品质裙裤", ""]
+
+    def collect(**_kwargs):
+        return {"shop_name": collected.pop(0), "platform": "douyin"}
+
+    exporter.collect_douyin_compass_metrics = collect  # type: ignore[method-assign]
+    exporter._get_current_douyin_home_shop_name = lambda: ""  # type: ignore[method-assign]
+    exporter._switch_to_next_unvisited_douyin_shop = (  # type: ignore[method-assign]
+        lambda _visited: switches.pop(0)
+    )
+
+    metrics = exporter.collect_douyin_all_shop_metrics(download_dir=None)
+
+    assert len(metrics) == 1
 
 
 def test_collect_douyin_all_shop_metrics_uses_switch_target_when_page_name_is_noisy() -> None:

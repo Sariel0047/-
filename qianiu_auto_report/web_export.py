@@ -4248,8 +4248,17 @@ class WebExporter:
     def _normalize_douyin_shop_name(shop_name: str) -> str:
         """
         归一化抖店店铺名，用于去重比较。
+
+        首页抬头通常会附带店铺类型和营业状态，切换店铺弹层则只显示
+        店铺主体名称，例如“高品质裙裤 个体店 正常营业”和“高品质裙裤”。
         """
-        return re.sub(r"\s+", "", str(shop_name or "")).strip()
+        normalized = re.sub(r"\s+", "", str(shop_name or "")).strip()
+        normalized = re.sub(
+            r"(?:个体店|企业店|正常营业|停业|冻结)+$",
+            "",
+            normalized,
+        )
+        return normalized
 
     def _open_douyin_homepage(self) -> None:
         """
@@ -4992,11 +5001,12 @@ class WebExporter:
         field_xpath = (
             "//*[contains(@class,'labelWrapper') and normalize-space()=$FIELD]"
             "/following-sibling::*[contains(@class,'fieldWrapper')]"
-            "//*[contains(@class,'auxo-select-selector') or @role='combobox'][1]"
+            "//*[contains(@class,'auxo-select-selector') or contains(@class,'aurora-select-content') or @role='combobox'][1]"
         ).replace("$FIELD", f"'{field_text}'")
         option_xpath = (
-            "//*[contains(@class,'auxo-select-dropdown') and not(contains(@class,'hidden'))]"
-            "//*[contains(@class,'auxo-select-item-option') and "
+            "//*[contains(@class,'auxo-select-dropdown') or contains(@class,'aurora-select-dropdown')]"
+            "[not(contains(@class,'hidden'))]"
+            "//*[contains(@class,'auxo-select-item-option') or contains(@class,'aurora-select-item-option')]["
             f"(normalize-space()='{option_text}' or @title='{option_text}')]"
         )
 
@@ -5005,7 +5015,12 @@ class WebExporter:
                 field_xpath,
                 (
                     "//*[contains(@class,'labelWrapper') and normalize-space()='%s']"
-                    "/following::*[contains(@class,'auxo-select-selector') or @role='combobox'][1]"
+                    "/following::*[contains(@class,'auxo-select-selector') or contains(@class,'aurora-select-content') or @role='combobox'][1]"
+                    % field_text
+                ),
+                (
+                    "//*[normalize-space()='%s']/following::*[contains(@class,'auxo-select-selector') "
+                    "or contains(@class,'aurora-select-content') or @role='combobox'][1]"
                     % field_text
                 ),
             ):
