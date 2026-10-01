@@ -507,6 +507,7 @@ class WebExporter:
         ),
         "douyin_compass_entry": (
             (By.XPATH, "//*[self::a or self::button or self::span or self::div][normalize-space()='电商罗盘']"),
+            (By.XPATH, "//*[self::a or self::button or self::span or self::div][normalize-space()='罗盘']"),
             (
                 By.XPATH,
                 "//*[self::a or self::button or self::span or self::div][contains(normalize-space(),'电商罗盘')]",
@@ -3308,10 +3309,13 @@ class WebExporter:
     @staticmethod
     def _is_douyin_compass_url(url: str) -> bool:
         """
-        判定是否已进入抖店“电商罗盘”页面。
+        判定是否位于抖店电商罗盘首页，而非退款分析等子页面。
         """
         current_url = (url or "").strip().lower()
         if not current_url or "jinritemai.com" not in current_url:
+            return False
+
+        if any(path in current_url for path in ("/refund-analysis", "/business-part")):
             return False
 
         compass_hints = (
@@ -3407,12 +3411,12 @@ class WebExporter:
         点击顶部导航【电商罗盘】，并切到罗盘数据页面。
         """
         current_url = (self.get_current_url() or "").lower()
+        if any(path in current_url for path in ("/refund-analysis", "/business-part")):
+            driver = self._ensure_driver()
+            driver.get("https://compass.jinritemai.com/shop")
+            self._wait_dom_ready()
+            self._promotion_pause(1.0)
         if self._is_douyin_compass_url(current_url):
-            if "refund-analysis" in current_url or "business-part" in current_url:
-                driver = self._ensure_driver()
-                driver.get("https://compass.jinritemai.com/shop")
-                self._wait_dom_ready()
-                self._promotion_pause(1.0)
             self._wait_until(
                 self._is_douyin_compass_page_by_content,
                 timeout_seconds=max(self.timeout_seconds, 20),
@@ -3429,7 +3433,12 @@ class WebExporter:
 
         clicked = (
             self._try_click_selector("douyin_compass_entry", timeout_seconds=max(self.timeout_seconds, 8))
-            or self._click_text_with_wait(("电商罗盘",), exact=False, timeout_seconds=max(self.timeout_seconds, 8), required=False)
+            or self._click_text_with_wait(
+                ("电商罗盘", "罗盘"),
+                exact=False,
+                timeout_seconds=max(self.timeout_seconds, 8),
+                required=False,
+            )
         )
         if not clicked:
             self._log_step("未直接点到顶部【电商罗盘】，改用罗盘 URL 兜底")
@@ -5061,9 +5070,15 @@ class WebExporter:
             timeout_seconds=5.0,
             required=False,
         )
-        if clicked:
-            self._promotion_pause(0.5)
-        return clicked or self._has_douyin_after_sale_date_shortcut_control()
+        if not clicked:
+            return self._has_douyin_after_sale_date_shortcut_control()
+
+        end_time = time.time() + max(self.timeout_seconds, 8.0)
+        while time.time() < end_time:
+            if self._has_douyin_after_sale_date_shortcut_control():
+                return True
+            time.sleep(max(self.ui_poll_interval_seconds, 0.12))
+        return self._has_douyin_after_sale_date_shortcut_control()
 
     def _has_douyin_after_sale_date_shortcut_control(self) -> bool:
         """
@@ -5071,11 +5086,11 @@ class WebExporter:
         """
         driver = self._ensure_driver()
         shortcut_xpaths = (
-            "//*[contains(@class,'auxo-picker-range')]/following::*[contains(@class,'auxo-select-selector')][1]",
+            "//*[contains(@class,'auxo-picker-range') or contains(@class,'aurora-picker-range')]/following::*[contains(@class,'auxo-select-selector') or contains(@class,'aurora-select-content')][1]",
             (
-                "//*[contains(@class,'auxo-col') and .//*[contains(@class,'auxo-picker-range')]]"
-                "//*[contains(@class,'auxo-input-group') and not(.//*[contains(@class,'auxo-picker-range')])]"
-                "//*[contains(@class,'auxo-select-selector')][1]"
+                "//*[contains(@class,'auxo-col') or contains(@class,'aurora-space-compact')]"
+                "[.//*[contains(@class,'auxo-picker-range') or contains(@class,'aurora-picker-range')]]"
+                "//*[contains(@class,'auxo-select-selector') or contains(@class,'aurora-select-content')][1]"
             ),
         )
         for xpath in shortcut_xpaths:
@@ -5089,7 +5104,7 @@ class WebExporter:
                         return True
                 except (StaleElementReferenceException, WebDriverException):
                     continue
-        return self._page_contains_text("申请时间") and self._page_contains_text("收起")
+        return False
 
     def _select_douyin_after_sale_date_field_option(
         self,
@@ -5117,16 +5132,17 @@ class WebExporter:
         )
         option_xpaths = (
             (
-                "//*[contains(@class,'auxo-select-dropdown') and not(contains(@class,'hidden'))]"
-                "//*[contains(@class,'auxo-select-item-option') and "
+                "//*[contains(@class,'auxo-select-dropdown') or contains(@class,'aurora-select-dropdown')]"
+                "[not(contains(@class,'hidden'))]"
+                "//*[contains(@class,'auxo-select-item-option') or contains(@class,'aurora-select-item-option')]["
                 f"(normalize-space()='{option_text}' or @title='{option_text}')]"
             ),
             (
-                "//*[contains(@class,'auxo-select-item-option') and "
+                "//*[contains(@class,'auxo-select-item-option') or contains(@class,'aurora-select-item-option')]["
                 f"(normalize-space()='{option_text}' or @title='{option_text}')]"
             ),
             (
-                "//*[contains(@class,'auxo-select-item-option') and "
+                "//*[contains(@class,'auxo-select-item-option') or contains(@class,'aurora-select-item-option')]["
                 f"contains(normalize-space(),'{option_text}')]"
             ),
         )
@@ -5222,8 +5238,15 @@ class WebExporter:
                     if not element.is_displayed():
                         continue
                     text = re.sub(r"\s+", " ", element.text or "").strip()
-                    title = re.sub(r"\s+", " ", element.get_attribute("title") or "").strip()
-                    if text == option_text or title == option_text:
+                    attribute_values = (
+                        element.get_attribute("title") or "",
+                        element.get_attribute("aria-label") or "",
+                        element.get_attribute("value") or "",
+                    )
+                    normalized_attributes = tuple(
+                        re.sub(r"\s+", " ", value).strip() for value in attribute_values
+                    )
+                    if text == option_text or option_text in normalized_attributes:
                         return True
                 except (StaleElementReferenceException, WebDriverException):
                     continue
@@ -5236,25 +5259,26 @@ class WebExporter:
         driver = self._ensure_driver()
 
         shortcut_xpaths = (
-            "//*[contains(@class,'auxo-picker-range')]/following::*[contains(@class,'auxo-select-selector')][1]",
+            "//*[contains(@class,'auxo-picker-range') or contains(@class,'aurora-picker-range')]/following::*[contains(@class,'auxo-select-selector') or contains(@class,'aurora-select-content')][1]",
             (
-                "//*[contains(@class,'auxo-col') and .//*[contains(@class,'auxo-picker-range')]]"
-                "//*[contains(@class,'auxo-input-group') and not(.//*[contains(@class,'auxo-picker-range')])]"
-                "//*[contains(@class,'auxo-select-selector')][1]"
+                "//*[contains(@class,'auxo-col') or contains(@class,'aurora-space-compact')]"
+                "[.//*[contains(@class,'auxo-picker-range') or contains(@class,'aurora-picker-range')]]"
+                "//*[contains(@class,'auxo-select-selector') or contains(@class,'aurora-select-content')][1]"
             ),
         )
         option_xpaths = (
             (
-                "//*[contains(@class,'auxo-select-dropdown') and not(contains(@class,'hidden'))]"
-                "//*[contains(@class,'auxo-select-item-option') and "
+                "//*[contains(@class,'auxo-select-dropdown') or contains(@class,'aurora-select-dropdown')]"
+                "[not(contains(@class,'hidden'))]"
+                "//*[contains(@class,'auxo-select-item-option') or contains(@class,'aurora-select-item-option')]["
                 f"(normalize-space()='{option_text}' or @title='{option_text}')]"
             ),
             (
-                "//*[contains(@class,'auxo-select-item-option') and "
+                "//*[contains(@class,'auxo-select-item-option') or contains(@class,'aurora-select-item-option')]["
                 f"(normalize-space()='{option_text}' or @title='{option_text}')]"
             ),
             (
-                "//*[contains(@class,'auxo-select-item-option') and "
+                "//*[contains(@class,'auxo-select-item-option') or contains(@class,'aurora-select-item-option')]["
                 f"contains(normalize-space(),'{option_text}')]"
             ),
         )
@@ -7383,7 +7407,14 @@ class WebExporter:
                     )
                     for text in raw_values:
                         normalized = self._clean_account_reason_value(text)
-                        if normalized:
+                        if normalized and normalized.lower() not in {
+                            "select",
+                            "input",
+                            "div",
+                            "span",
+                            "button",
+                            "option",
+                        }:
                             return normalized
                 except Exception:
                     continue

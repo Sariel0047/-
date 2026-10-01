@@ -1141,6 +1141,41 @@ def test_get_account_reason_control_value_reads_typed_reason_input() -> None:
     assert exporter._is_account_reason_selected("交易赔付") is True
 
 
+def test_get_account_reason_control_value_ignores_select_control_type_and_reads_selected_reason() -> None:
+    """
+    新版账户明细控件可能把 HTML 控件类型暴露为 value=select；不能把它当作原因值。
+    """
+    exporter = WebExporter()
+    exporter._ensure_account_details_context = lambda: True  # type: ignore[method-assign]
+    exporter.selectors = {
+        "account_details_reason_dropdown": ((By.XPATH, "//reason-control"),),
+    }
+
+    class _ReasonControl(_FakeElement):
+        def __init__(self) -> None:
+            super().__init__(text="交易赔付", attrs={"value": "select"})
+
+    class _Driver:
+        def find_elements(self, by: str, value: str) -> list[_FakeElement]:
+            if by == By.XPATH and value == "//reason-control":
+                return [_ReasonControl()]
+            return []
+
+        def execute_script(self, *_args, **_kwargs) -> str:
+            return ""
+
+    exporter.driver = _Driver()  # type: ignore[assignment]
+
+    assert exporter._get_account_reason_control_value() == "交易赔付"
+
+
+def test_is_douyin_compass_url_rejects_refund_analysis_subpage() -> None:
+    """退款分析子页不是电商罗盘首页。"""
+    assert WebExporter._is_douyin_compass_url(
+        "https://compass.jinritemai.com/shop/refund-analysis?date_type=1"
+    ) is False
+
+
 def test_get_account_reason_control_value_ignores_date_from_broad_fallback() -> None:
     """
     账户明细原因控件不能把日期输入框的值误读成原因值。
@@ -2265,6 +2300,89 @@ def test_select_douyin_after_sale_date_field_uses_compact_date_control() -> None
     assert clicks == ["aurora-select-content", "end-time-option"]
 
 
+def test_select_douyin_after_sale_date_field_accepts_selected_value_attribute() -> None:
+    """新版日期字段可能只把当前选项放在 value/title 属性中。"""
+    exporter = WebExporter()
+
+    class _Driver:
+        def find_elements(self, by: str, value: str) -> list[_FakeElement]:
+            if by == By.XPATH and "aurora-select-content" in value:
+                return [_FakeElement(text="", attrs={"value": "完结时间"})]
+            return []
+
+    exporter.driver = _Driver()  # type: ignore[assignment]
+    assert exporter._is_douyin_after_sale_date_field_selected("完结时间") is True
+
+
+def test_select_douyin_after_sale_date_field_supports_aurora_option() -> None:
+    """真实页面使用 aurora-select-item-option，而不是旧 auxo 类名。"""
+    exporter = WebExporter()
+    clicks: list[str] = []
+
+    class _AuroraDriver:
+        def __init__(self) -> None:
+            self.field = _ClickableElement("申请时间", clicks=clicks, name="aurora-field")
+            self.option = _ClickableElement("完结时间", clicks=clicks, name="aurora-option")
+
+        def find_elements(self, by: str, value: str) -> list[_FakeElement]:
+            if by != By.XPATH:
+                return []
+            if "aurora-select-content" in value:
+                return [self.field]
+            if "aurora-select-item-option" in value:
+                return [self.option]
+            return []
+
+        def execute_script(self, *_args: object) -> None:
+            return None
+
+    driver = _AuroraDriver()
+    exporter.driver = driver  # type: ignore[assignment]
+    exporter._promotion_pause = lambda scale=1.0: None  # type: ignore[method-assign]
+    exporter._is_douyin_after_sale_date_field_selected = (  # type: ignore[method-assign]
+        lambda option: option == "完结时间" and "aurora-option" in clicks
+    )
+
+    assert exporter._select_douyin_after_sale_date_field_option("完结时间") is True
+    assert clicks == ["aurora-field", "aurora-option"]
+
+
+def test_click_douyin_after_sale_more_filters_waits_for_date_control(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """点击“更多筛选”后，必须等日期筛选区实际渲染完成。"""
+    exporter = WebExporter()
+    checks = {"count": 0}
+
+    def has_date_control() -> bool:
+        checks["count"] += 1
+        return checks["count"] >= 2
+
+    monkeypatch.setattr("qianiu_auto_report.web_export.time.sleep", lambda _seconds: None)
+    monkeypatch.setattr("qianiu_auto_report.web_export.time.time", lambda: 0.0)
+    exporter._has_douyin_after_sale_date_shortcut_control = has_date_control  # type: ignore[method-assign]
+    exporter._click_text_with_wait = lambda *args, **kwargs: True  # type: ignore[method-assign]
+    exporter._promotion_pause = lambda scale=1.0: None  # type: ignore[method-assign]
+    exporter.ui_poll_interval_seconds = 0.0
+
+    assert exporter._click_douyin_after_sale_more_filters() is True
+    assert checks["count"] >= 2
+
+
+def test_after_sale_date_control_check_rejects_unrelated_page_text() -> None:
+    """售后列表和侧栏的“申请时间/收起”不能视为日期筛选控件已展开。"""
+    exporter = WebExporter()
+
+    class _Driver:
+        def find_elements(self, _by: str, _value: str) -> list[_FakeElement]:
+            return []
+
+    exporter.driver = _Driver()  # type: ignore[assignment]
+    exporter._page_contains_text = lambda text: text in {"申请时间", "收起"}  # type: ignore[method-assign]
+
+    assert exporter._has_douyin_after_sale_date_shortcut_control() is False
+
+
 def test_select_douyin_after_sale_date_shortcut_uses_right_side_quick_select() -> None:
     """
     切到“完结时间”后，应点击日期行右侧“请选择”快捷下拉并选择“昨日”。
@@ -2426,6 +2544,65 @@ def test_open_douyin_compass_page_falls_back_to_direct_url_when_click_does_not_s
     exporter._wait_until = lambda *args, **kwargs: None  # type: ignore[method-assign]
     exporter._promotion_pause = lambda scale=1.0: None  # type: ignore[method-assign]
     exporter._log_step = lambda message: calls.append(("log", message))  # type: ignore[method-assign]
+
+    exporter._open_douyin_compass_page()
+
+    assert ("get", "https://compass.jinritemai.com/shop") in calls
+
+
+def test_open_douyin_compass_page_supports_renamed_compass_entry() -> None:
+    """新版顶部导航将“电商罗盘”更名为“罗盘”时，仍应优先点击入口。"""
+    exporter = WebExporter()
+    calls: list[tuple[str, object]] = []
+
+    class _Driver:
+        current_url = "https://fxg.jinritemai.com/ffa/mshop/homepage/index"
+
+    exporter.driver = _Driver()  # type: ignore[assignment]
+    exporter._ensure_driver = lambda: exporter.driver  # type: ignore[method-assign]
+    exporter.get_current_url = lambda: exporter.driver.current_url  # type: ignore[method-assign]
+    exporter._switch_default_content = lambda: None  # type: ignore[method-assign]
+    exporter._close_douyin_notice_popup_if_present = lambda: False  # type: ignore[method-assign]
+    exporter._capture_window_handles = lambda: {"a"}  # type: ignore[method-assign]
+    exporter._try_click_selector = lambda *args, **kwargs: False  # type: ignore[method-assign]
+
+    def click_text(texts, **_kwargs):
+        calls.append(("click_text", tuple(texts)))
+        return "罗盘" in texts
+
+    exporter._click_text_with_wait = click_text  # type: ignore[method-assign]
+    exporter._wait_switch_to_douyin_compass_page = lambda *args, **kwargs: True  # type: ignore[method-assign]
+    exporter._is_douyin_compass_page_by_content = lambda: True  # type: ignore[method-assign]
+    exporter._wait_until = lambda *args, **kwargs: None  # type: ignore[method-assign]
+    exporter._promotion_pause = lambda scale=1.0: None  # type: ignore[method-assign]
+    exporter._log_step = lambda message: calls.append(("log", message))  # type: ignore[method-assign]
+
+    exporter._open_douyin_compass_page()
+
+    assert ("click_text", ("电商罗盘", "罗盘")) in calls
+    assert ("log", "已进入顶部导航：电商罗盘") in calls
+
+
+def test_open_douyin_compass_page_redirects_refund_analysis_to_home() -> None:
+    """当前停留在退款分析子页时，应直接打开罗盘首页。"""
+    exporter = WebExporter()
+    calls: list[tuple[str, object]] = []
+
+    class _Driver:
+        current_url = "https://compass.jinritemai.com/shop/refund-analysis?date_type=1"
+
+        def get(self, url: str) -> None:
+            calls.append(("get", url))
+
+    exporter.driver = _Driver()  # type: ignore[assignment]
+    exporter._ensure_driver = lambda: exporter.driver  # type: ignore[method-assign]
+    exporter.get_current_url = lambda: exporter.driver.current_url  # type: ignore[method-assign]
+    exporter._wait_dom_ready = lambda: None  # type: ignore[method-assign]
+    exporter._promotion_pause = lambda scale=1.0: None  # type: ignore[method-assign]
+    exporter._close_douyin_notice_popup_if_present = lambda: False  # type: ignore[method-assign]
+    exporter._wait_until = lambda *args, **kwargs: None  # type: ignore[method-assign]
+    exporter._is_douyin_compass_page_by_content = lambda: True  # type: ignore[method-assign]
+    exporter._log_step = lambda message: None  # type: ignore[method-assign]
 
     exporter._open_douyin_compass_page()
 
