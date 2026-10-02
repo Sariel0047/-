@@ -749,6 +749,23 @@ def test_set_date_range_inputs_accepts_page_specific_scope_label() -> None:
     assert "rangeLabel" in str(calls[0][1])
 
 
+def test_set_date_range_inputs_finds_range_from_sibling_application_time_label() -> None:
+    """Windows 页面可将“申请时间”放在日期控件的同级标签中。"""
+    exporter = WebExporter()
+    scripts: list[str] = []
+
+    class _Driver:
+        def execute_script(self, script: str, *_args: object) -> bool:
+            scripts.append(script)
+            return True
+
+    exporter.driver = _Driver()  # type: ignore[assignment]
+
+    assert exporter._set_date_range_inputs("2026-09-01 00:00:00", "2026-10-01 23:59:59") is True
+    assert "findLabeledRanges" in scripts[0]
+    assert "labelNodes" in scripts[0]
+
+
 def test_open_bill_summary_date_picker_accepts_wide_window_control(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -862,6 +879,41 @@ def test_set_taobao_after_sale_application_date_range_falls_back_to_calendar_pic
         ("day", "2026-07-31"),
         ("day", "2026-08-31"),
         ("confirm", ""),
+    ]
+
+
+def test_taobao_after_sale_application_date_range_accepts_date_only_control_values() -> None:
+    """Windows 新版日期控件可能只显示 YYYY-MM-DD，不带时分秒。"""
+    exporter = WebExporter()
+
+    class _Driver:
+        def execute_script(self, _script: str) -> dict[str, str]:
+            return {"start": "2026-09-01", "end": "2026/10/01"}
+
+    exporter.driver = _Driver()  # type: ignore[assignment]
+
+    assert exporter._is_taobao_after_sale_application_date_range_selected(
+        "2026-09-01", "2026-10-01"
+    ) is True
+
+
+def test_set_taobao_after_sale_application_date_range_retries_with_date_only_values() -> None:
+    """部分 Windows 日期控件拒绝时分秒值时，应回退到纯日期输入。"""
+    exporter = WebExporter()
+    writes: list[tuple[str, str]] = []
+
+    def set_inputs(start: str, end: str) -> bool:
+        writes.append((start, end))
+        return start == "2026-09-01" and end == "2026-10-01"
+
+    exporter._set_date_range_inputs = set_inputs  # type: ignore[method-assign]
+    exporter._is_taobao_after_sale_application_date_range_selected = lambda *_args: True  # type: ignore[method-assign]
+    exporter._set_taobao_after_sale_application_date_range_via_picker = lambda *_args: False  # type: ignore[method-assign]
+
+    assert exporter._set_taobao_after_sale_application_date_range("2026-10-01") is True
+    assert writes == [
+        ("2026-09-01 00:00:00", "2026-10-01 23:59:59"),
+        ("2026-09-01", "2026-10-01"),
     ]
 
 

@@ -8497,9 +8497,35 @@ class WebExporter:
 
                 const allRanges = Array.from(document.querySelectorAll('.next-range-picker, [class*="range-picker"]'))
                   .filter((range) => range.offsetParent !== null);
-                const matchingRanges = rangeLabel
-                  ? allRanges.filter((range) => normalize(range.innerText || range.textContent || '').includes(rangeLabel))
-                  : allRanges;
+                const hasTwoDateInputs = (container) => Array.from(container.querySelectorAll('input'))
+                  .filter((el) => el.offsetParent !== null)
+                  .filter((el) => /\\d{4}-\\d{2}-\\d{2}/.test(`${el.value || ''} ${el.placeholder || ''}`)
+                    || ['开始', '结束', '起始日期', '结束日期'].includes(String(el.placeholder || '').trim()))
+                  .length >= 2;
+                const findLabeledRanges = () => {
+                  if (!rangeLabel) return [];
+                  const ranges = [];
+                  const labelNodes = Array.from(document.querySelectorAll('label, span, div'))
+                    .filter((node) => node.offsetParent !== null)
+                    .filter((node) => normalize(node.innerText || node.textContent || '') === rangeLabel);
+                  for (const labelNode of labelNodes) {
+                    let container = labelNode.parentElement;
+                    for (let depth = 0; depth < 6 && container; depth += 1) {
+                      if (container.offsetParent !== null && hasTwoDateInputs(container)) {
+                        ranges.push(container);
+                        break;
+                      }
+                      container = container.parentElement;
+                    }
+                  }
+                  return ranges;
+                };
+                const matchingRanges = Array.from(new Set(rangeLabel
+                  ? [
+                    ...allRanges.filter((range) => normalize(range.innerText || range.textContent || '').includes(rangeLabel)),
+                    ...findLabeledRanges(),
+                  ]
+                  : allRanges));
                 const scopedInputs = matchingRanges.flatMap((range) =>
                   Array.from(range.querySelectorAll('input')).filter((el) => el.offsetParent !== null)
                 );
@@ -8516,9 +8542,15 @@ class WebExporter:
 
                 const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
                 const inputFor = (placeholder, fallbackIndex) => {
-                  const liveRanges = Array.from(document.querySelectorAll('.next-range-picker, [class*="range-picker"]'))
-                    .filter((range) => range.offsetParent !== null)
-                    .filter((range) => !rangeLabel || normalize(range.innerText || range.textContent || '').includes(rangeLabel));
+                  const liveRanges = Array.from(new Set(rangeLabel
+                    ? [
+                      ...Array.from(document.querySelectorAll('.next-range-picker, [class*="range-picker"]'))
+                        .filter((range) => range.offsetParent !== null)
+                        .filter((range) => normalize(range.innerText || range.textContent || '').includes(rangeLabel)),
+                      ...findLabeledRanges(),
+                    ]
+                    : Array.from(document.querySelectorAll('.next-range-picker, [class*="range-picker"]'))
+                      .filter((range) => range.offsetParent !== null)));
                   const liveScopedInputs = liveRanges.flatMap((range) =>
                     Array.from(range.querySelectorAll('input')).filter((el) => el.offsetParent !== null)
                   );
@@ -11350,6 +11382,9 @@ class WebExporter:
             f"{start_date} 00:00:00",
             f"{end_date} 23:59:59",
         )
+        if not updated:
+            # 部分 Windows 新版控件只接受 YYYY-MM-DD，不接受包含时分秒的值。
+            updated = self._set_date_range_inputs(start_date, end_date)
         if updated and self._is_taobao_after_sale_application_date_range_selected(
             start_date,
             end_date,
@@ -11450,12 +11485,35 @@ class WebExporter:
         try:
             values = driver.execute_script(
                 """
-                const range = Array.from(document.querySelectorAll('.next-range-picker'))
-                  .filter((el) => el.offsetParent !== null)
+                const visible = (el) => !!el && el.offsetParent !== null;
+                const hasTwoDateInputs = (container) => Array.from(container.querySelectorAll('input'))
+                  .filter(visible)
+                  .filter((input) => /\\d{4}[/-]\\d{2}[/-]\\d{2}/.test(`${input.value || ''} ${input.placeholder || ''}`)
+                    || ['开始', '结束', '起始日期', '结束日期'].includes(String(input.placeholder || '').trim()))
+                  .length >= 2;
+                let range = Array.from(document.querySelectorAll('.next-range-picker, [class*="range-picker"]'))
+                  .filter(visible)
                   .find((el) => /申请\\s*时间/.test(String(el.innerText || el.textContent || '')));
+                if (!range) {
+                  const labelNodes = Array.from(document.querySelectorAll('label, span, div'))
+                    .filter(visible)
+                    .filter((node) => String(node.innerText || node.textContent || '').replace(/\\s+/g, '') === '申请时间');
+                  for (const labelNode of labelNodes) {
+                    let container = labelNode.parentElement;
+                    for (let depth = 0; depth < 6 && container; depth += 1) {
+                      if (visible(container) && hasTwoDateInputs(container)) {
+                        range = container;
+                        break;
+                      }
+                      container = container.parentElement;
+                    }
+                    if (range) break;
+                  }
+                }
                 if (!range) return null;
-                const start = range.querySelector('input[placeholder="起始日期"]');
-                const end = range.querySelector('input[placeholder="结束日期"]');
+                const inputs = Array.from(range.querySelectorAll('input')).filter(visible);
+                const start = range.querySelector('input[placeholder="起始日期"]') || inputs[0];
+                const end = range.querySelector('input[placeholder="结束日期"]') || inputs[1];
                 return { start: start ? String(start.value || '') : '', end: end ? String(end.value || '') : '' };
                 """,
             )
@@ -11463,9 +11521,12 @@ class WebExporter:
             return False
         if not isinstance(values, dict):
             return False
-        return str(values.get("start", "")) == f"{start_date} 00:00:00" and str(
-            values.get("end", "")
-        ) == f"{end_date} 23:59:59"
+
+        def selected_date(value: object) -> str:
+            match = re.search(r"\d{4}[/-]\d{2}[/-]\d{2}", str(value or ""))
+            return match.group(0).replace("/", "-") if match else ""
+
+        return selected_date(values.get("start")) == start_date and selected_date(values.get("end")) == end_date
 
     def trigger_export(self) -> float:
         """
